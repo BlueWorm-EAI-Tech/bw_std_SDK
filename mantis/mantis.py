@@ -1,0 +1,1113 @@
+"""
+Mantis 机器人主控制类
+======================
+
+提供 Standard 机器人的统一控制接口。
+
+通信协议:
+    使用 Zenoh 协议进行通信，无需安装 ROS2。
+    SDK 通过纯 Python Zenoh 发送 JSON 格式数据，
+    机器人端通过 Python 桥接节点 (sdk_bridge) 转发到 ROS2。
+
+Example:
+    .. code-block:: python
+    
+        from mantis import Mantis
+        
+        # 连接机器人
+        with Mantis(ip="192.168.1.100") as robot:
+            robot.left_arm.set_shoulder_pitch(-0.5)
+            robot.head.look_left()
+        
+        # 本地调试（同一局域网）
+        with Mantis() as robot:
+            robot.left_arm.set_joints([0.0, 0.5, 0.0, 1.0, 0.0, 0.0, 0.0])
+"""
+
+from typing import Optional, Callable, Dict, Any
+import time
+import json
+import threading
+import uuid
+
+try:
+    import zenoh
+except ImportError:
+    raise ImportError("请安装 zenoh: pip install eclipse-zenoh")
+
+from .arm import Arm
+from .gripper import Gripper
+from .head import Head
+from .waist import Waist
+from .chassis import Chassis
+from .constants import (
+    Topics, JOINT_NAMES,
+    SERIAL_TO_URDF_MAP,
+    ALL_URDF_JOINTS
+)
+
+
+class Mantis:
+    """Standard 机器人主控制类。
+    
+    提供对 Standard 机器人的统一控制接口，包括双臂、夹爪、头部、滑台和底盘。
+    
+    Attributes:
+        left_arm (Arm): 左臂控制器
+        right_arm (Arm): 右臂控制器
+        left_gripper (Gripper): 左夹爪控制器
+        right_gripper (Gripper): 右夹爪控制器
+        head (Head): 头部控制器
+        chassis (Chassis): 底盘控制器
+        is_connected (bool): 是否已连接
+    
+    Example:
+        使用上下文管理器（推荐）::
+        
+            with Mantis(ip="192.168.1.100") as robot:
+                robot.left_arm.set_shoulder_pitch(-0.5)
+                robot.head.look_left()
+        
+        手动管理连接::
+        
+            robot = Mantis(ip="192.168.1.100")
+            robot.connect()
+            robot.left_arm.home()
+            robot.disconnect()
+    
+    Note:
+        使用前需在机器人工作区启动 Standard SDK 链路::
+        
+            ./scripts/local/sdk_bridge.sh standard v3 wifi
+    """
+    
+    #: 默认 Zenoh 端口
+    DEFAULT_PORT = 7447
+    
+    def __init__(
+        self,
+        ip: Optional[str] = None,
+        port: int = None,
+        sn: Optional[str] = None,
+        robot_version: str = "standard",
+    ):
+        """初始化 Standard 机器人。
+        
+        Args:
+            ip: 机器人 IP 地址，例如 "192.168.1.100"。
+                如果为 None，可在 connect() 时再指定。
+            port: Zenoh 端口，默认 7447。
+            sn: 机器人 SN，例如 "BW_4TEOGD"。
+                如果为 None，可在 connect() 时再指定。
+            robot_version: 固定为 ``"standard"``；也接受缩写 ``"std"``。
+                IK 在机器人 ROS 侧使用 Standard 模型解算。
+        
+        Example:
+            .. code-block:: python
+            
+                # 仅初始化，不立即建立连接
+                robot = Mantis(ip="192.168.1.100")
+                
+                # 也可只给 SN
+                robot = Mantis(sn="BW_4TEOGD")
+
+                # Standard 双臂直控 / 机器人端 IK
+                robot = Mantis(sn="BW_4TEOGD", robot_version="standard")
+
+                # 自动发现（后续 connect 时解析）
+                robot = Mantis()
+        """
+        normalized_robot_version = str(robot_version).strip().lower()
+        normalized_robot_version = {"std": "standard"}.get(
+            normalized_robot_version,
+            normalized_robot_version,
+        )
+        if normalized_robot_version != "standard":
+            raise ValueError(
+                f"此 SDK 仅支持 robot_version='standard'，当前收到: {robot_version!r}"
+            )
+
+        self._target_ip = ip
+        self._target_sn = sn
+        self._port = port or self.DEFAULT_PORT
+        self._router = f"tcp/{self._target_ip}:{self._port}" if self._target_ip else None
+        self._robot_version = normalized_robot_version
+        
+        self._session: Optional[zenoh.Session] = None
+        self._publishers = {}
+        self._subscribers = {}
+        self._connected = False
+        self._robot_ip: Optional[str] = None
+        self._robot_sn: Optional[str] = None
+        self._status_topic = Topics.SYSTEM_STATUS
+        self._arm_command_status_topic = Topics.SDK_ARM_COMMAND_STATUS
+        self._arm_command_lock = threading.Lock()
+        self._pending_arm_commands: Dict[str, Dict[str, Any]] = {}
+        
+        # 创建子模块
+        self._left_arm = Arm(self, "left")
+        self._right_arm = Arm(self, "right")
+        self._left_gripper = Gripper(self, "left")
+        self._right_gripper = Gripper(self, "right")
+        self._head = Head(self)
+        self._waist = Waist(self)
+        self._chassis = Chassis(self)
+        
+        # 反馈数据
+        self._feedback_callback: Optional[Callable] = None
+        self._status_callback: Optional[Callable] = None
+        self._system_status = {}  # 存储最近一次系统状态
+        self._last_status_update_time = 0.0
+        
+        # 存储所有关节状态（用于完整发布）
+        self._joint_states = {name: 0.0 for name in ALL_URDF_JOINTS}
+        
+    # ==================== 属性访问 ====================
+    
+    @property
+    def left_arm(self) -> Arm:
+        """左臂控制器。
+        
+        Returns:
+            Arm: 左臂 7 自由度控制器
+        """
+        return self._left_arm
+    
+    @property
+    def right_arm(self) -> Arm:
+        """右臂控制器。
+        
+        Returns:
+            Arm: 右臂 7 自由度控制器
+        """
+        return self._right_arm
+    
+    @property
+    def left_gripper(self) -> Gripper:
+        """左夹爪控制器。
+        
+        Returns:
+            Gripper: 左夹爪控制器
+        """
+        return self._left_gripper
+    
+    @property
+    def right_gripper(self) -> Gripper:
+        """右夹爪控制器。
+        
+        Returns:
+            Gripper: 右夹爪控制器
+        """
+        return self._right_gripper
+    
+    @property
+    def head(self) -> Head:
+        """头部控制器。
+        
+        Returns:
+            Head: 头部 2 自由度控制器
+        """
+        return self._head
+    
+    @property
+    def waist(self) -> Waist:
+        """腰部控制器。
+        
+        Returns:
+            Waist: 腰部升降控制器
+        """
+        return self._waist
+    
+    @property
+    def chassis(self) -> Chassis:
+        """底盘控制器。
+        
+        Returns:
+            Chassis: 全向底盘控制器
+        """
+        return self._chassis
+    
+    @property
+    def is_connected(self) -> bool:
+        """是否已连接到机器人。
+        
+        Returns:
+            bool: 连接状态
+        """
+        return self._connected
+
+    @property
+    def robot_version(self) -> str:
+        """目标机器人版本。"""
+        return self._robot_version
+    
+    @property
+    def robot_ip(self) -> Optional[str]:
+        """获取机器人的 IP 地址。
+        
+        Returns:
+            str: 机器人的 IP 地址，如果未连接或获取失败则为 None
+        """
+        return self._robot_ip
+    
+    @property
+    def system_status(self) -> dict:
+        """获取最近一次系统状态。
+        
+        Returns:
+            dict: 包含 system_state, control_source, message, motion_names, motion_states 等字段
+        """
+        return self._system_status
+
+    @property
+    def robot_sn(self) -> Optional[str]:
+        """获取机器人的 SN。"""
+        return self._robot_sn
+    
+    # ==================== 连接管理 ====================
+    
+    @staticmethod
+    def _normalize_key(key: str) -> str:
+        """规范化 Zenoh key（去除首尾斜杠）。"""
+        normalized = (key or "").strip().strip("/")
+        if not normalized:
+            raise ValueError("Zenoh key 不能为空")
+        return normalized
+
+    @classmethod
+    def _topic_with_sn(cls, sn: str, base_topic: str) -> str:
+        """拼接 SN 前缀话题。"""
+        return f"{cls._normalize_key(sn)}/{cls._normalize_key(base_topic)}"
+
+    @property
+    def supports_ik(self) -> bool:
+        """Standard 支持机器人端 IK pose command。"""
+        return True
+
+    def _ensure_ik_supported(self) -> None:
+        """在使用 IK 相关能力前校验当前版本是否支持。"""
+        if self.supports_ik:
+            return
+        raise NotImplementedError(f"{self._robot_version} 当前 SDK 不支持 IK")
+
+    def _next_command_id(self) -> str:
+        """生成 SDK 手臂命令唯一 ID。"""
+        return f"sdk-{uuid.uuid4().hex}"
+
+    def _resolve_identity(
+        self,
+        timeout: float,
+        expect_ip: Optional[str] = None,
+        expect_sn: Optional[str] = None,
+    ) -> Optional[Dict[str, str]]:
+        """从全局 `sn` 话题解析目标机器人身份。"""
+        if not self._session:
+            return None
+
+        result: Dict[str, str] = {}
+        done = threading.Event()
+
+        def _on_identity(sample):
+            try:
+                data = json.loads(sample.payload.to_bytes().decode("utf-8"))
+            except Exception:
+                return
+
+            sn = data.get("sn")
+            ip = data.get("ip")
+            if not sn or not ip:
+                return
+
+            if expect_ip and ip != expect_ip:
+                return
+            if expect_sn and sn != expect_sn:
+                return
+
+            result["sn"] = sn
+            result["ip"] = ip
+            done.set()
+
+        identity_topic = self._normalize_key(Topics.ROBOT_IDENTITY)
+        sub = self._session.declare_subscriber(identity_topic, _on_identity)
+        try:
+            done.wait(timeout=max(timeout, 0.1))
+        finally:
+            sub.undeclare()
+
+        return result if result else None
+
+    def connect(
+        self,
+        timeout: float = 5.0,
+        verify: bool = True,
+        ip: Optional[str] = None,
+        sn: Optional[str] = None,
+    ) -> bool:
+        """连接到机器人。
+        
+        建立与机器人的 Zenoh 通信连接。连接流程如下：
+        1) 通过全局 `sn` 话题解析目标机器人 (ip/sn)
+        2) 发布话题按 `SN` 前缀隔离（`<SN>/sdk/*`）
+        3) 通过 `<SN>/sdk/system_status` 做状态双重校验
+        
+        Args:
+            timeout: 连接超时时间（秒），默认 5.0
+            verify: 是否等待目标机器人的系统状态完成在线校验，默认 True。
+            ip: 连接时覆盖目标 IP。
+            sn: 连接时覆盖目标 SN。
+            
+        Returns:
+            bool: 连接是否成功
+        
+        Raises:
+            无异常抛出，失败时返回 False 并打印错误信息。
+        
+        Example:
+            .. code-block:: python
+            
+                robot = Mantis()
+                if robot.connect(ip="192.168.1.100"):
+                    print("连接成功")
+
+                if robot.connect(sn="BW_4TEOGD"):
+                    print("连接成功")
+                else:
+                    print("连接失败")
+        """
+        if self._connected:
+            same_ip = (not ip) or (ip in (self._target_ip, self._robot_ip))
+            same_sn = (not sn) or (sn in (self._target_sn, self._robot_sn))
+            if same_ip and same_sn:
+                return True
+            self.disconnect()
+        
+        if ip:
+            self._target_ip = ip
+        if sn:
+            self._target_sn = sn
+
+        self._router = f"tcp/{self._target_ip}:{self._port}" if self._target_ip else None
+
+        target_desc = []
+        if self._target_ip:
+            target_desc.append(f"ip={self._target_ip}")
+        if self._target_sn:
+            target_desc.append(f"sn={self._target_sn}")
+        target = ", ".join(target_desc) if target_desc else "自动发现模式"
+        print(f"⏳ 正在连接 Mantis 机器人 ({target})...")
+        
+        try:
+            config = zenoh.Config()
+            if self._router:
+                config.insert_json5("connect/endpoints", f'["{self._router}"]')
+            
+            self._session = zenoh.open(config)
+
+            # 使用全局 sn 话题解析目标机器人身份（IP/SN）
+            identity = self._resolve_identity(
+                timeout=timeout,
+                expect_ip=self._target_ip,
+                expect_sn=self._target_sn,
+            )
+            if not identity:
+                self._close_transport()
+                print("❌ 连接失败: 未在 sn 话题找到目标机器人")
+                print("   请检查:")
+                print("   1) 机器人端 sn_publisher_node 是否已启动")
+                print("   2) SDK 与机器人是否在同一 Zenoh 网络")
+                if self._target_ip:
+                    print(f"   3) 目标 IP: {self._target_ip}")
+                if self._target_sn:
+                    print(f"   4) 目标 SN: {self._target_sn}")
+                return False
+
+            self._target_ip = identity["ip"]
+            self._target_sn = identity["sn"]
+            self._robot_ip = self._target_ip
+            self._robot_sn = self._target_sn
+
+            joint_topic = self._topic_with_sn(self._target_sn, Topics.SDK_JOINT_STATES)
+            arm_command_topic = self._topic_with_sn(self._target_sn, Topics.SDK_ARM_COMMAND)
+            chassis_topic = self._topic_with_sn(self._target_sn, Topics.SDK_CHASSIS)
+            pelvis_height_topic = self._topic_with_sn(self._target_sn, Topics.SDK_PELVIS_HEIGHT)
+            waist_angle_topic = self._topic_with_sn(self._target_sn, Topics.SDK_WAIST_ANGLE)
+            self._status_topic = self._topic_with_sn(self._target_sn, Topics.SYSTEM_STATUS)
+            self._arm_command_status_topic = self._topic_with_sn(
+                self._target_sn,
+                Topics.SDK_ARM_COMMAND_STATUS,
+            )
+
+            # 创建发布者（SDK -> Zenoh，按 SN 前缀隔离）
+            self._publishers['joints'] = self._session.declare_publisher(joint_topic)
+            self._publishers['arm_command'] = self._session.declare_publisher(arm_command_topic)
+            self._publishers['chassis'] = self._session.declare_publisher(chassis_topic)
+            self._publishers['pelvis_height'] = self._session.declare_publisher(pelvis_height_topic)
+            self._publishers['waist_angle'] = self._session.declare_publisher(waist_angle_topic)
+
+            # 双重校验：收到匹配 SN 的状态机状态
+            if verify:
+                received = []
+
+                def _check_callback(sample):
+                    try:
+                        data = json.loads(sample.payload.to_bytes().decode("utf-8"))
+                    except Exception:
+                        return
+
+                    recv_ip = data.get("ip")
+                    recv_sn = data.get("sn", self._target_sn)
+
+                    if recv_sn != self._target_sn:
+                        return
+                    if self._target_ip and recv_ip and recv_ip != self._target_ip:
+                        return
+
+                    if recv_ip:
+                        self._robot_ip = recv_ip
+                    self._system_status = data
+                    self._last_status_update_time = time.monotonic()
+                    received.append(True)
+
+                sub = self._session.declare_subscriber(self._status_topic, _check_callback)
+                start = time.time()
+                while time.time() - start < timeout:
+                    if received:
+                        break
+                    time.sleep(0.1)
+                sub.undeclare()
+
+                if not received:
+                    self._close_transport()
+                    print("❌ 连接超时: 状态机双重校验失败")
+                    print("   请检查:")
+                    print(f"   1) 目标机器人 SN={self._target_sn} 是否在线")
+                    print(f"   2) 桥接节点是否发布状态话题: {self._status_topic}")
+                    return False
+            
+            self._connected = True
+            print(
+                f"✅ 已连接到 Mantis 机器人 (sn={self._target_sn}, ip={self._robot_ip})"
+            )
+            
+            # 自动订阅反馈和状态，用于更新内部状态 (robot_ip, system_status)
+            self.subscribe_status(None)
+            self._subscribe_arm_command_status()
+            
+            return True
+            
+        except Exception as e:
+            self._close_transport()
+            print(f"❌ 连接失败: {e}")
+            return False
+
+    def _close_transport(self) -> None:
+        """释放 Zenoh 资源，并唤醒正在等待的手臂命令。"""
+        for pub in list(self._publishers.values()):
+            try:
+                pub.undeclare()
+            except Exception:
+                pass
+        for sub in list(self._subscribers.values()):
+            try:
+                sub.undeclare()
+            except Exception:
+                pass
+        if self._session is not None:
+            try:
+                self._session.close()
+            except Exception:
+                pass
+
+        self._session = None
+        self._publishers.clear()
+        self._subscribers.clear()
+        with self._arm_command_lock:
+            for pending in self._pending_arm_commands.values():
+                pending["status"] = 6
+                pending["message"] = "SDK disconnected"
+                pending["event"].set()
+            self._pending_arm_commands.clear()
+        self._connected = False
+    
+    def disconnect(self):
+        """断开与机器人的连接。
+        
+        停止底盘运动，关闭 Zenoh 会话并释放资源。
+        
+        Note:
+            使用上下文管理器时会自动调用此方法。
+        """
+        if self._session:
+            # 停止运动
+            if self._connected and "chassis" in self._publishers:
+                self._chassis.stop()
+            self._close_transport()
+            print("✅ 已断开连接")
+    
+    # ==================== 内部发布方法 ====================
+    
+    def _check_connection(self):
+        """检查连接状态。
+        
+        Raises:
+            RuntimeError: 如果未连接到机器人
+        """
+        if not self._connected:
+            raise RuntimeError("未连接到机器人，请先调用 connect()")
+    
+    def _publish_joints(self):
+        """发布手臂关节角度。
+        
+        将左右臂的关节位置发送到机器人。
+        直接发送 JSON 数据，不进行平滑插值。
+        """
+        self._check_connection()
+        self._publish_full_state()
+
+    def _publish_arm_command(self, command: Dict[str, Any], wait_joint_names: Optional[list] = None):
+        """发布手臂统一命令。
+
+        SDK 只发送目标语义，IK 解算由机器人 ROS 侧统一链路完成。
+        """
+        self._check_connection()
+        command = dict(command)
+        command_id = str(command.get("command_id") or self._next_command_id())
+        command["command_id"] = command_id
+        self._register_pending_arm_command(command_id, command, wait_joint_names)
+        try:
+            self._publishers['arm_command'].put(json.dumps(command).encode('utf-8'))
+        except Exception:
+            with self._arm_command_lock:
+                self._pending_arm_commands.pop(command_id, None)
+            raise
+        return command_id
+
+    def _publish_arm_joint_command(
+        self,
+        joint_names: list,
+        joint_positions: list,
+        motion_profile: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """通过统一手臂命令发布 Standard 的部分或完整关节目标。"""
+        self._check_connection()
+        if len(joint_names) != len(joint_positions):
+            raise ValueError("joint_names 与 joint_positions 长度必须一致")
+        names = [SERIAL_TO_URDF_MAP.get(name, name) for name in joint_names]
+        command = {
+            "command_type": "joint",
+            "name": names,
+            "position": [float(value) for value in joint_positions],
+        }
+        if motion_profile:
+            command["motion_profile"] = dict(motion_profile)
+        return self._publish_arm_command(command, wait_joint_names=joint_names)
+
+    def _register_pending_arm_command(
+        self,
+        command_id: str,
+        command: Dict[str, Any],
+        wait_joint_names: Optional[list] = None,
+    ) -> None:
+        """登记一条 SDK 手臂命令，供 block=True 和 robot.wait() 精确等待。"""
+        event = threading.Event()
+        joint_names = (
+            self._with_urdf_aliases(wait_joint_names)
+            if wait_joint_names is not None
+            else self._arm_joint_names_for_command(command)
+        )
+        with self._arm_command_lock:
+            self._pending_arm_commands[command_id] = {
+                "event": event,
+                "status": None,
+                "message": "",
+                "target": {},
+                "joint_names": joint_names,
+                "created_at": time.monotonic(),
+            }
+
+    def _arm_joint_names_for_command(self, command: Dict[str, Any]) -> list:
+        """根据 SDK 命令估算其影响的手臂关节。"""
+        command_type = str(command.get("command_type", "joint"))
+        if command_type == "joint":
+            return self._with_urdf_aliases(JOINT_NAMES)
+
+        side = str(command.get("side", "both")).lower()
+        if side == "left":
+            return self._with_urdf_aliases(self._left_arm.joint_names)
+        if side == "right":
+            return self._with_urdf_aliases(self._right_arm.joint_names)
+        return self._with_urdf_aliases(JOINT_NAMES)
+
+    @staticmethod
+    def _with_urdf_aliases(joint_names: list) -> list:
+        """把 SDK 公共语义关节名扩展出 Standard URDF 正式名。"""
+        expanded = list(joint_names)
+        for name in joint_names:
+            alias = SERIAL_TO_URDF_MAP.get(name)
+            if alias and alias not in expanded:
+                expanded.append(alias)
+        return expanded
+
+    def _handle_arm_command_status(self, data: Dict[str, Any]) -> None:
+        """处理机器人端回传的 SDK 手臂命令状态。"""
+        command_id = str(data.get("command_id") or "")
+        if not command_id:
+            return
+
+        status = self._parse_arm_command_status(data.get("status"))
+        target = data.get("target") or {}
+        target_names = list(target.get("name", [])) if isinstance(target, dict) else []
+
+        with self._arm_command_lock:
+            pending = self._pending_arm_commands.get(command_id)
+            if pending is None:
+                return
+            pending["status"] = status
+            pending["message"] = str(data.get("message") or "")
+            pending["target"] = target if isinstance(target, dict) else {}
+            if target_names:
+                pending["target_joint_names"] = target_names
+            if status in (4, 5, 6):
+                pending["event"].set()
+
+    @staticmethod
+    def _parse_arm_command_status(value) -> int:
+        """把状态数字或字符串统一为 ArmCommandStatus 枚举值。"""
+        if isinstance(value, str):
+            normalized = value.strip().upper()
+            mapping = {
+                "STATUS_RECEIVED": 1,
+                "RECEIVED": 1,
+                "STATUS_ROUTED": 2,
+                "ROUTED": 2,
+                "STATUS_RESOLVED": 3,
+                "RESOLVED": 3,
+                "STATUS_FAILED": 4,
+                "FAILED": 4,
+                "STATUS_COMPLETED": 5,
+                "COMPLETED": 5,
+                "STATUS_TIMEOUT": 6,
+                "TIMEOUT": 6,
+            }
+            if normalized in mapping:
+                return mapping[normalized]
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    def _wait_arm_command(self, command_id: str, timeout: float = 10.0) -> None:
+        """等待指定 SDK 手臂命令完成。"""
+        with self._arm_command_lock:
+            pending = self._pending_arm_commands.get(command_id)
+
+        if pending is None:
+            raise TimeoutError(f"SDK arm command {command_id} is not pending")
+
+        if not pending["event"].wait(timeout=max(float(timeout), 0.001)):
+            with self._arm_command_lock:
+                self._pending_arm_commands.pop(command_id, None)
+            raise TimeoutError(f"SDK arm command {command_id} timed out")
+
+        status = pending.get("status")
+        message = pending.get("message") or "no message"
+        with self._arm_command_lock:
+            self._pending_arm_commands.pop(command_id, None)
+
+        if status == 5:
+            return
+        if status == 4:
+            raise RuntimeError(f"SDK arm command {command_id} failed: {message}")
+        if status == 6:
+            raise TimeoutError(f"SDK arm command {command_id} timed out: {message}")
+        raise RuntimeError(
+            f"SDK arm command {command_id} ended with unexpected status {status}: {message}"
+        )
+
+    def _wait_pending_arm_commands(
+        self,
+        joint_names: Optional[list] = None,
+        timeout: float = 10.0,
+    ) -> int:
+        """等待已发出的 SDK 手臂命令，返回实际等待的命令数量。"""
+        with self._arm_command_lock:
+            command_ids = [
+                command_id
+                for command_id, pending in self._pending_arm_commands.items()
+                if self._pending_arm_command_matches(pending, joint_names)
+            ]
+
+        waited = 0
+        deadline = time.monotonic() + max(float(timeout), 0.001)
+        for command_id in command_ids:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("SDK arm commands timed out")
+            self._wait_arm_command(command_id, timeout=remaining)
+            waited += 1
+        return waited
+
+    @staticmethod
+    def _pending_arm_command_matches(pending: Dict[str, Any], joint_names: Optional[list]) -> bool:
+        if not joint_names:
+            return True
+        requested = set(joint_names)
+        pending_names = set(pending.get("joint_names") or [])
+        return bool(requested & pending_names)
+
+    
+    def _publish_grippers(self):
+        """发布夹爪位置。
+        
+        将左右夹爪的位置发送到机器人。
+        直接发送 JSON 数据，不进行平滑插值。
+        """
+        self._check_connection()
+        
+        # 夹爪沿用 joint_states 通道，但只发送夹爪自身，避免隐式改变双臂目标。
+        left_grip = float(self._left_gripper._position) * 0.04
+        right_grip = float(self._right_gripper._position) * 0.04
+        self._publish_joint_state(
+            ["L_Hand_L_Joint", "R_Hand_L_Joint"],
+            [left_grip, right_grip],
+        )
+
+    def _publish_head(self):
+        self._check_connection()
+        self._publish_joint_state(
+            ["Head_Joint", "Neck_Joint"],
+            [float(self._head._pitch), float(self._head._yaw)],
+        )
+    
+    def _publish_waist(self):
+        self._check_connection()
+        self._publish_pelvis_height()
+
+    def _publish_pelvis_height(self):
+        self._check_connection()
+        data = {
+            'height': float(self._waist._height),
+            'max_velocity': float(self._waist._speed)
+        }
+        self._publishers['pelvis_height'].put(json.dumps(data).encode('utf-8'))
+
+    def _publish_waist_angle(self):
+        raise NotImplementedError("Standard 机器人不支持腰部前后弯腰控制")
+
+    def _publish_joint_state(self, names: list, positions: list):
+        """在 legacy joint_states 通道发布不含隐式关节目标的部分更新。"""
+        if len(names) != len(positions):
+            raise ValueError("names 与 positions 长度必须一致")
+        msg = {
+            "name": list(names),
+            "position": [float(value) for value in positions],
+            "velocity": [],
+            "effort": [],
+        }
+        self._publishers["joints"].put(json.dumps(msg).encode("utf-8"))
+
+    def _publish_full_state(self):
+        """发送所有模块的当前目标状态。确保所有数据均为 float 类型。"""
+        # 收集所有模块状态
+        arm_positions = self._left_arm._positions + self._right_arm._positions
+        
+        names = []
+        values = []
+        
+        # 1. 双臂
+        for i, serial_name in enumerate(JOINT_NAMES):
+            urdf_name = SERIAL_TO_URDF_MAP.get(serial_name, serial_name)
+            names.append(urdf_name)
+            # SDK 内部统一使用 URDF 关节语义；实机方向修正留到最终硬件链路处理。
+            values.append(float(arm_positions[i]))
+            
+        # 2. 夹爪
+        left_grip = float(self._left_gripper._position) * 0.04
+        right_grip = float(self._right_gripper._position) * 0.04
+        names.extend(["L_Hand_R_Joint", "L_Hand_L_Joint", "R_Hand_R_Joint", "R_Hand_L_Joint"])
+        values.extend([left_grip, left_grip, right_grip, right_grip])
+        
+        # 3. 头部
+        names.extend(["Head_Joint", "Neck_Joint"])
+        values.extend([float(self._head._pitch), float(self._head._yaw)])
+        
+        # 4. 腰部
+        names.append("Waist_Joint")
+        values.append(float(self._waist._height))
+        
+        # 构建消息
+        msg = {
+            'name': names,
+            'position': values,
+            'velocity': [],
+            'effort': []
+        }
+        
+        # 安全性检查：确保 position 中没有非数字值
+        if any(v is None for v in values):
+            return
+            
+        # 检查 NaN 或 Inf
+        import math
+        if any(math.isnan(v) or math.isinf(v) for v in values):
+            print(f"⚠️ 警告: 检测到 NaN 或 Inf 数据，跳过发送: {values}")
+            return
+
+        self._publish_joint_state(msg["name"], msg["position"])
+
+    
+    def _publish_chassis(self):
+        """发布底盘速度。
+        
+        将底盘的线速度和角速度发送到机器人。
+        """
+        self._check_connection()
+        
+        # 统一使用 JSON 格式发送底盘命令
+        data = {
+            'vx': self._chassis._vx,
+            'vy': self._chassis._vy,
+            'omega': self._chassis._omega
+        }
+        self._publishers['chassis'].put(json.dumps(data).encode('utf-8'))
+    
+    # ==================== 便捷方法 ====================
+    
+    def home(self, block: bool = True):
+        """所有关节回到零位。
+        
+        将双臂、头部回零，夹爪闭合。
+        
+        Args:
+            block: 是否阻塞等待完成，默认 True
+        """
+        self._left_arm._positions = [0.0] * len(self._left_arm._positions)
+        self._left_arm._target_positions = [0.0] * len(self._left_arm._target_positions)
+        self._right_arm._positions = [0.0] * len(self._right_arm._positions)
+        self._right_arm._target_positions = [0.0] * len(self._right_arm._target_positions)
+        self._publish_arm_joint_command(JOINT_NAMES, [0.0] * len(JOINT_NAMES))
+        self._head.center(block=False)
+        self._waist.home(block=False)
+        self._left_gripper.close(block=False)
+        self._right_gripper.close(block=False)
+        
+        if block:
+            self.wait()
+    
+    def wait(self, joint_names: Optional[list] = None, timeout: float = 10.0):
+        """等待部件运动完成。
+        
+        阻塞直到指定的部件完成运动。
+        SDK 手臂命令优先等待 command_id 精确闭环；非手臂仍基于 system_status 判断。
+        
+        Args:
+            joint_names: 要等待的关节名称列表。如果为 None，则等待所有部件。
+            timeout: 最长等待时间（秒），默认 10 秒。
+        
+        Example:
+            .. code-block:: python
+            
+                # 启动多个非阻塞运动
+                robot.left_arm.set_shoulder_pitch(-0.5, block=False)
+                robot.right_arm.set_shoulder_pitch(-0.5, block=False)
+                robot.head.look_left(block=False)
+                
+                # 等待全部完成
+                robot.wait()
+                
+                # 仅等待左臂
+                robot.wait(robot.left_arm.joint_names)
+        """
+        timeout = float(timeout)
+        if timeout <= 0:
+            raise ValueError("timeout 必须大于 0")
+        deadline = time.monotonic() + timeout
+
+        waited_arm_commands = self._wait_pending_arm_commands(joint_names, timeout=timeout)
+        if waited_arm_commands > 0 and self._only_arm_joints_requested(joint_names):
+            return
+
+        # 初始等待，确保指令已发送且状态已更新
+        # 即使在 100Hz 下，网络传输和 ROS 内部处理也需要时间
+        time.sleep(0.01)
+        
+        # 强等待策略
+        wait_start = time.monotonic()
+        motion_detected = False
+        
+        # 阶段 1: 等待运动标志位变 1 (Waiting for motion to START)
+        # 增加超时时间到 3.0s，防止长延迟导致漏检
+        while time.monotonic() - wait_start < 1 and time.monotonic() < deadline:
+            if self.is_moving(joint_names):
+                motion_detected = True
+                break
+            time.sleep(0.001)
+            
+        if not motion_detected:
+            # 即使超时，也不立即返回，而是进入停止检测，双重保险
+            pass
+            
+        # 阶段 2: 等待运动标志位变 0 (Waiting for motion to STOP)
+        stable_stop_start = None
+        last_seen_status_update_time = self._last_status_update_time
+        required_stop_duration = 0.12
+        
+        while True:
+            if time.monotonic() >= deadline:
+                requested = joint_names if joint_names else "all joints"
+                raise TimeoutError(f"等待运动停止超时: {requested}")
+            is_moving = self.is_moving(joint_names)
+            current_status_update_time = self._last_status_update_time
+            has_fresh_status = current_status_update_time != last_seen_status_update_time
+            last_seen_status_update_time = current_status_update_time
+            
+            if not is_moving:
+                if has_fresh_status:
+                    now = time.monotonic()
+                    if stable_stop_start is None:
+                        stable_stop_start = now
+                    elif now - stable_stop_start >= required_stop_duration:
+                        break
+            else:
+                stable_stop_start = None
+                
+            time.sleep(0.001)
+    
+    @property
+    def is_any_moving(self) -> bool:
+        """是否有任何部件正在运动。
+        
+        Returns:
+            bool: True 如果有部件在运动中
+        """
+        return self.is_moving()
+
+    def is_moving(self, joint_names: Optional[list] = None) -> bool:
+        """指定部件是否正在运动。
+
+        Args:
+            joint_names: 关节名称列表。如果为 None，检查所有部件。
+
+        Returns:
+            bool: True 如果指定部件中有任何一个在运动中
+        """
+        if not self._system_status or 'motion_states' not in self._system_status:
+            return False
+            
+        motion_names = self._system_status.get('motion_names', [])
+        motion_states = self._system_status.get('motion_states', [])
+        
+        if not joint_names:
+            return any(s == 1 for s in motion_states)
+            
+        urdf_to_public = {urdf: public for public, urdf in SERIAL_TO_URDF_MAP.items()}
+        for name in joint_names:
+            public_name = urdf_to_public.get(name, name)
+            motion_name = (
+                public_name[:-len("_joint")]
+                if public_name.endswith("_joint")
+                else public_name
+            )
+            if motion_name in motion_names:
+                idx = motion_names.index(motion_name)
+                if idx < len(motion_states) and motion_states[idx] == 1:
+                    return True
+        return False
+
+    @staticmethod
+    def _only_arm_joints_requested(joint_names: Optional[list]) -> bool:
+        """判断 wait() 是否只针对手臂关节。"""
+        if not joint_names:
+            return False
+        return set(joint_names).issubset(set(JOINT_NAMES))
+    
+    def stop(self):
+        """停止所有运动。
+        
+        立即停止底盘运动。
+        """
+        if self._connected:
+            self._chassis.stop()
+    
+    def subscribe_status(self, callback: Optional[Callable] = None):
+        """订阅系统状态反馈。
+        
+        注册回调函数，接收机器人的系统状态信息（如关节是否在运动）。
+        
+        Args:
+            callback: 回调函数，签名为 ``callback(data: dict)``。
+                data 包含 system_state, motion_names, motion_states 等字段。
+        """
+        self._check_connection()
+        self._status_callback = callback
+        
+        def _on_status(sample):
+            try:
+                data = json.loads(sample.payload.to_bytes().decode('utf-8'))
+                self._system_status = data
+                self._last_status_update_time = time.monotonic()
+                if self._status_callback:
+                    self._status_callback(data)
+            except Exception as e:
+                print(f"⚠️ 解析系统状态失败: {e}")
+                
+        # 如果已经存在，先取消订阅
+        if 'status' in self._subscribers:
+            self._subscribers['status'].undeclare()
+            
+        self._subscribers['status'] = self._session.declare_subscriber(
+            self._status_topic,
+            _on_status
+        )
+        if callback:
+            print("✅ 已订阅系统状态")
+
+    def _subscribe_arm_command_status(self):
+        """订阅 SDK 手臂命令状态反馈。"""
+        self._check_connection()
+
+        def _on_arm_command_status(sample):
+            try:
+                data = json.loads(sample.payload.to_bytes().decode("utf-8"))
+                self._handle_arm_command_status(data)
+            except Exception as e:
+                print(f"⚠️ 解析手臂命令状态失败: {e}")
+
+        if "arm_command_status" in self._subscribers:
+            self._subscribers["arm_command_status"].undeclare()
+
+        self._subscribers["arm_command_status"] = self._session.declare_subscriber(
+            self._arm_command_status_topic,
+            _on_arm_command_status,
+        )
+    
+    # ==================== 上下文管理 ====================
+    
+    def __enter__(self) -> "Mantis":
+        """进入上下文管理器。
+        
+        自动调用 connect() 建立连接。
+        
+        Returns:
+            Mantis: 机器人实例
+        
+        Raises:
+            ConnectionError: 如果连接失败
+        """
+        if not self.connect():
+            raise ConnectionError("无法连接到机器人")
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """退出上下文管理器。
+        
+        自动停止运动并断开连接。
+        """
+        if self._connected:
+            self.stop()
+            self.disconnect()
+    
+    def __repr__(self) -> str:
+        """返回机器人的字符串表示。"""
+        status = "已连接" if self._connected else "未连接"
+        return f"Mantis(status='{status}', robot_version='{self._robot_version}')"
