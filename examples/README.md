@@ -57,9 +57,9 @@ python -m examples.basic.connection_example --sn BW_XXXXXXX
 
 | 示例 | 作用 |
 | --- | --- |
-| `head/head_example.py` | `look_*`、`set_pose`、回中和限位读取 |
-| `head/head_scan_example.py` | 在安全范围内按多个 yaw 目标扫描，演示观察状态 |
-| `waist/waist_height_example.py` | C 轴滑台回零、升降、相对位移和限位 |
+| `head/head_example.py` | `look_*`、三轴 `set_pose`、单轴设置、回中和限位读取 |
+| `head/head_scan_example.py` | 在安全范围内按 pitch/yaw/roll 目标扫描，演示观察状态 |
+| `waist/waist_height_example.py` | 滑台回零、升降、相对位移和限位 |
 | `chassis/chassis_example.py` | 全向平移、旋转、摩擦补偿和非阻塞停止 |
 | `chassis/chassis_square_example.py` | 底盘方形路径：四段短距离路径，演示每段完成后再执行下一段 |
 | `basic/safe_stop_example.py` | `try/finally` 和 Ctrl-C 时发送底盘零速度 |
@@ -102,4 +102,4 @@ python -m examples.basic.safe_stop_example --ip 192.168.50.170
 - 目标参数放在命令行，不在代码中写入真实 IP、SN 或永久循环。
 - 非阻塞命令必须在结尾调用模块 `wait()` 或 `robot.wait()`；底盘示例还应在 `finally` 中调用 `stop()`。
 - 示例中的距离、角度和速度与 README 一样使用明确单位；范围统一写成 `下限 ~ 上限`。
-- Standard 没有腰部前后弯腰轴，不添加弯腰示例；调用相应 API 会得到 `NotImplementedError`。
+- 当前示例只覆盖 Standard 已公开的手臂、头部、夹爪、滑台和底盘接口。

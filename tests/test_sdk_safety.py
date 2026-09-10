@@ -189,6 +189,7 @@ def test_all_motion_modules_reject_non_finite_inputs(invalid):
         lambda: robot.left_arm.set_joints([invalid] * 7, block=False),
         lambda: robot.left_arm.ik(invalid, 0, 0, 0, 0, 0, block=False),
         lambda: robot.head.set_pitch(invalid, block=False),
+        lambda: robot.head.set_roll(invalid, block=False),
         lambda: robot.left_gripper.set_position(invalid, block=False),
         lambda: robot.waist.set_height(invalid, block=False),
     ]

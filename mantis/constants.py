@@ -59,6 +59,7 @@ RIGHT_ARM_LIMITS = [
 HEAD_LIMITS = {
     "pitch": (-0.785, 0.524),
     "yaw": (-1.570, 1.570),
+    "roll": (-0.349, 0.349),
 }
 
 GRIPPER_LIMITS = (0.0, 1.0)
@@ -97,7 +98,7 @@ class Topics:
     SDK_ARM_COMMAND_STATUS = "sdk/arm_command_status"
     SDK_CHASSIS = "sdk/chassis"
     SDK_PELVIS_HEIGHT = "sdk/pelvis_height"
-    # 保留协议键；Standard 不支持腰部前后弯腰。
+    # 保留协议兼容键，避免旧机器人端桥接配置无法解析。
     SDK_WAIST_ANGLE = "sdk/waist_angle"
     SYSTEM_STATUS = "sdk/system_status"
     FORCE_FEEDBACK = "sdk/force_feedback"

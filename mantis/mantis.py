@@ -1,6 +1,6 @@
 """Standard 机器人主控制类。
 
-提供 Standard 机器人的统一控制接口：双臂、双夹爪、头部、C 轴滑台和
+提供 Standard 机器人的统一控制接口：双臂、双夹爪、三轴头部、滑台和
 全向底盘。客户端只负责发送 JSON 目标和消费状态，IK 与运动平滑在机器人
 端执行；因此 SDK 不需要 ROS2、URDF、Pinocchio 或 CasADi。
 
@@ -205,16 +205,16 @@ class Mantis:
         """头部控制器。
         
         Returns:
-            Head: 头部 2 自由度控制器
+            Head: 头部 3 自由度控制器
         """
         return self._head
     
     @property
     def waist(self) -> Waist:
-        """腰部控制器。
+        """滑台控制器。
         
         Returns:
-            Waist: 腰部升降控制器
+            Waist: 滑台升降控制器
         """
         return self._waist
     
@@ -775,8 +775,12 @@ class Mantis:
     def _publish_head(self):
         self._check_connection()
         self._publish_joint_state(
-            ["Head_Joint", "Neck_Joint"],
-            [float(self._head._pitch), float(self._head._yaw)],
+            ["Head_Joint", "Neck_Joint", "head_roll_joint"],
+            [
+                float(self._head._pitch),
+                float(self._head._yaw),
+                float(self._head._roll),
+            ],
         )
     
     def _publish_waist(self):
@@ -792,7 +796,7 @@ class Mantis:
         self._publishers['pelvis_height'].put(json.dumps(data).encode('utf-8'))
 
     def _publish_waist_angle(self):
-        raise NotImplementedError("Standard 机器人不支持腰部前后弯腰控制")
+        raise NotImplementedError("当前 Standard 配置未提供该兼容接口")
 
     def _publish_joint_state(self, names: list, positions: list):
         """在 legacy joint_states 通道发布不含隐式关节目标的部分更新。"""
@@ -828,10 +832,14 @@ class Mantis:
         values.extend([left_grip, left_grip, right_grip, right_grip])
         
         # 3. 头部
-        names.extend(["Head_Joint", "Neck_Joint"])
-        values.extend([float(self._head._pitch), float(self._head._yaw)])
+        names.extend(["Head_Joint", "Neck_Joint", "head_roll_joint"])
+        values.extend([
+            float(self._head._pitch),
+            float(self._head._yaw),
+            float(self._head._roll),
+        ])
         
-        # 4. 腰部
+        # 4. 滑台
         names.append("Waist_Joint")
         values.append(float(self._waist._height))
         

@@ -22,13 +22,15 @@ def main() -> int:
         robot.head.look_down(0.1, block=block)
         robot.head.set_pitch(0.0, block=block)
         robot.head.set_yaw(0.1, block=block)
-        robot.head.set_pose(pitch=0.0, yaw=0.0, block=block)
+        robot.head.set_roll(0.05, block=block)
+        robot.head.set_pose(pitch=0.0, yaw=0.0, roll=0.0, block=block)
 
         if args.non_blocking:
             robot.head.wait()
 
         print(f"pitch={robot.head.pitch:.3f}")
         print(f"yaw={robot.head.yaw:.3f}")
+        print(f"roll={robot.head.roll:.3f}")
         print(f"is_moving={robot.head.is_moving}")
         robot.head.center(block=True)
 

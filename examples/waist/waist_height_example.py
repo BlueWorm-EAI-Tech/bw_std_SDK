@@ -6,7 +6,7 @@ from examples.common import add_common_motion_arguments, add_robot_arguments, co
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Demonstrate Standard C-axis height control.")
+    parser = argparse.ArgumentParser(description="Demonstrate Standard slide height control.")
     add_robot_arguments(parser)
     add_common_motion_arguments(parser)
     args = parser.parse_args()

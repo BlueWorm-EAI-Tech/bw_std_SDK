@@ -61,4 +61,5 @@ def test_standard_auxiliary_limits_are_exposed_in_sdk_units():
     assert constants.HEAD_LIMITS == {
         "pitch": (-0.785, 0.524),
         "yaw": (-1.570, 1.570),
+        "roll": (-0.349, 0.349),
     }

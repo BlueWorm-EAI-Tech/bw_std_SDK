@@ -1,7 +1,8 @@
 """Standard 机器人头部控制。
 
-头部提供两个自由度：俯仰 ``pitch`` 和偏航 ``yaw``。角度单位为弧度，
-``set_pose`` 的缺省 ``clamp=True`` 会把目标限制到 Standard 实机限位内。
+头部提供三个自由度：俯仰 ``pitch``、偏航 ``yaw`` 和滚转 ``roll``。
+角度单位为弧度，``set_pose`` 的缺省 ``clamp=True`` 会把目标限制到
+Standard 真机限位内。
 头部命令没有手臂那样的独立 command id，阻塞等待依赖机器人状态话题；
 因此生产程序应保留合理的等待超时和断开清理逻辑。
 
@@ -48,7 +49,7 @@ def _make_look_action(attr: str, sign: int, default: float, doc: str):
             angle: 角度大小（弧度），默认使用预设值
             block: 是否阻塞等待完成，默认 True
         """
-        new_value = sign * abs(angle)
+        new_value = sign * abs(finite_float(angle, "angle"))
         setattr(self, f"_{attr}", new_value)
         self._apply_limits()
         
@@ -67,13 +68,14 @@ def _make_look_action(attr: str, sign: int, default: float, doc: str):
 class Head:
     """头部控制器。
     
-    头部有 2 个自由度：
+    头部有 3 个自由度：
     
     ========  ==============  ==================
     轴        中文名          范围 (rad)
     ========  ==============  ==================
     pitch     俯仰            -0.785 ~ 0.524
     yaw       偏航            -1.570 ~ 1.570
+    roll      滚转            -0.349 ~ 0.349
     ========  ==============  ==================
     
     支持阻塞/非阻塞模式：
@@ -83,6 +85,7 @@ class Head:
     Attributes:
         pitch: 当前俯仰角（弧度）
         yaw: 当前偏航角（弧度）
+        roll: 当前滚转角（弧度）
         is_moving: 是否正在运动中
     
     Example:
@@ -104,6 +107,7 @@ class Head:
         self._robot = robot
         self._pitch = 0.0
         self._yaw = 0.0
+        self._roll = 0.0
         self._limits = HEAD_LIMITS
         self._speed = self.DEFAULT_SPEED
     
@@ -116,6 +120,11 @@ class Head:
     def yaw(self) -> float:
         """当前偏航角（弧度）。"""
         return self._yaw
+
+    @property
+    def roll(self) -> float:
+        """当前滚转角（弧度）。"""
+        return self._roll
 
     @property
     def limits(self) -> dict:
@@ -144,6 +153,7 @@ class Head:
         """应用限位。"""
         self._pitch = self._clamp("pitch", self._pitch)
         self._yaw = self._clamp("yaw", self._yaw)
+        self._roll = self._clamp("roll", self._roll)
     
     def _execute_motion(self, block: bool):
         """执行运动。"""
@@ -159,26 +169,36 @@ class Head:
         """是否正在运动中。"""
         return self._robot.is_moving(['head'])
     
-    def set_pose(self, pitch: float = None, yaw: float = None, clamp: bool = True, block: bool = True):
+    def set_pose(
+        self,
+        pitch: float = None,
+        yaw: float = None,
+        clamp: bool = True,
+        block: bool = True,
+        *,
+        roll: float = None,
+    ):
         """设置头部姿态。
         
         Args:
             pitch: 俯仰角（弧度），闭区间 -0.785 ~ 0.524；``None`` 表示保持当前值。
             yaw: 偏航角（弧度），闭区间 -1.570 ~ 1.570；``None`` 表示保持当前值。
+            roll: 滚转角（弧度），闭区间 -0.349 ~ 0.349；``None`` 表示保持当前值。
             clamp: 是否自动限制在限位范围内，默认 True。设为 False 时，
                 只校验有限数值，不在客户端截断，最终是否接受由机器人端决定。
             block: 是否阻塞等待完成，默认 True。
 
         Example:
-            ``robot.head.set_pose(pitch=-0.1, yaw=0.25)`` 发送完整头部目标；
-            ``robot.head.set_yaw(0.25, block=False)`` 立即返回，随后可调用
-            ``robot.head.wait()`` 等待完成。
+            ``robot.head.set_pose(pitch=-0.1, yaw=0.25, roll=0.05)`` 发送完整
+            头部目标；只传一个轴时，其余轴保持当前目标。
         """
         
         if pitch is not None:
             self._pitch = self._clamp("pitch", pitch) if clamp else finite_float(pitch, "pitch")
         if yaw is not None:
             self._yaw = self._clamp("yaw", yaw) if clamp else finite_float(yaw, "yaw")
+        if roll is not None:
+            self._roll = self._clamp("roll", roll) if clamp else finite_float(roll, "roll")
         
         self._robot._publish_head()
         self._execute_motion(block)
@@ -202,19 +222,32 @@ class Head:
             block: 是否阻塞
         """
         self.set_pose(yaw=angle, clamp=clamp, block=block)
+
+    def set_roll(self, angle: float, clamp: bool = True, block: bool = True):
+        """设置滚转角。
+
+        Args:
+            angle: 目标角度（弧度），闭区间 -0.349 ~ 0.349。
+            clamp: 是否自动限制到头部滚转限位，默认 True。
+            block: 是否阻塞等待完成，默认 True。
+        """
+        self.set_pose(roll=angle, clamp=clamp, block=block)
     
     def center(self, block: bool = True):
-        """回中（俯仰和偏航都归零）。
+        """回中（俯仰、偏航和滚转都归零）。
         
         Args:
             block: 是否阻塞等待完成，默认 True
         """
-        self.set_pose(0.0, 0.0, block=block)
+        self.set_pose(pitch=0.0, yaw=0.0, roll=0.0, block=block)
     
     def __repr__(self) -> str:
         """返回头部的字符串表示。"""
         status = "运动中" if self.is_moving else "停止"
-        return f"Head({status}, pitch={self._pitch:.2f}, yaw={self._yaw:.2f})"
+        return (
+            f"Head({status}, pitch={self._pitch:.2f}, "
+            f"yaw={self._yaw:.2f}, roll={self._roll:.2f})"
+        )
 
 
 # 动态生成 look_xxx 方法

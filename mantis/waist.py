@@ -1,8 +1,7 @@
-"""Standard C 轴滑台控制。
+"""Standard 滑台控制。
 
-Standard 的“腰部”只有升降滑台，不包含前后弯腰轴。SDK 以出厂默认高度
-``-100 mm`` 为零点，公共 ``height`` 使用相对位移（m）：硬件位置
-``-500 ~ 0 mm`` 对应 SDK 的 ``-0.4 ~ 0.1 m``。
+滑台以出厂默认高度 ``-100 mm`` 为零点，公共 ``height`` 使用相对位移
+（m）：硬件位置 ``-500 ~ 0 mm`` 对应 SDK 的 ``-0.4 ~ 0.1 m``。
 """
 
 from typing import TYPE_CHECKING
@@ -19,7 +18,7 @@ WAIST_LIMITS = (-0.4, 0.1)
 
 
 class Waist:
-    """控制 Standard 滑台高度；Standard 不包含前后弯腰自由度。
+    """控制 Standard 滑台高度。
 
     ``set_height`` 的值是相对默认位置的目标位移，不是直接的绝对硬件
     编码器位置。缺省 ``clamp=True``，超出 ``-0.4 ~ 0.1 m`` 时会截断到
@@ -47,7 +46,7 @@ class Waist:
 
     @property
     def bend_angle(self) -> float:
-        """Standard 无弯腰轴，始终为 0。"""
+        """兼容旧接口，返回固定值 0.0。"""
         return 0.0
 
     def set_speed(self, speed: float):
@@ -56,22 +55,22 @@ class Waist:
 
     @staticmethod
     def _ensure_bend_supported() -> None:
-        raise NotImplementedError("Standard 机器人不支持腰部前后弯腰控制")
+        raise NotImplementedError("当前 Standard 配置未提供该兼容接口")
 
     def set_bend_speed(self, speed: float):
-        """Standard 不支持前后弯腰。"""
+        """兼容旧接口。"""
         self._ensure_bend_supported()
 
     def set_bend(self, angle: float, clamp: bool = True, block: bool = True):
-        """Standard 不支持前后弯腰。"""
+        """兼容旧接口。"""
         self._ensure_bend_supported()
 
     def bend_forward(self, angle: float = 0.3, block: bool = True):
-        """Standard 不支持前倾弯腰。"""
+        """兼容旧接口。"""
         self._ensure_bend_supported()
 
     def bend_backward(self, angle: float = 0.2, block: bool = True):
-        """Standard 不支持后仰。"""
+        """兼容旧接口。"""
         self._ensure_bend_supported()
 
     def _clamp(self, value: float) -> float:

@@ -80,6 +80,17 @@ def test_publish_full_state_uses_raw_urdf_arm_angles():
     )
 
 
+def test_head_publishes_pitch_yaw_and_roll_for_sdk_bridge():
+    robot = _make_connected_robot()
+    robot._publishers["joints"] = _FakePublisher()
+
+    robot.head.set_pose(pitch=-0.1, yaw=0.2, roll=0.05, block=False)
+
+    msg = json.loads(robot._publishers["joints"].messages[-1].decode("utf-8"))
+    assert msg["name"] == ["Head_Joint", "Neck_Joint", "head_roll_joint"]
+    assert msg["position"] == pytest.approx([-0.1, 0.2, 0.05])
+
+
 def test_arm_ik_absolute_control_publishes_robot_side_pose_command():
     robot = _make_connected_robot()
     publisher = _FakePublisher()
@@ -255,7 +266,7 @@ def test_standard_waist_bend_control_is_not_available():
         (robot.waist.bend_forward, (0.2,)),
         (robot.waist.bend_backward, (0.1,)),
     ):
-        with pytest.raises(NotImplementedError, match="Standard.*不支持.*弯腰"):
+        with pytest.raises(NotImplementedError, match="Standard.*未提供.*兼容接口"):
             method(*args)
 
 
