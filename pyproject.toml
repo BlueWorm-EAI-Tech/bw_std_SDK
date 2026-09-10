@@ -38,8 +38,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/BlueWorm-EAI-Tech/mantis-sdk"
-Repository = "https://github.com/BlueWorm-EAI-Tech/mantis-sdk"
+Homepage = "https://github.com/BlueWorm-EAI-Tech/bw_std_SDK"
+Repository = "https://github.com/BlueWorm-EAI-Tech/bw_std_SDK"
 
 [tool.setuptools]
 include-package-data = true

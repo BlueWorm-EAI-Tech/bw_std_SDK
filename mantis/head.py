@@ -1,10 +1,9 @@
-"""
-头部控制模块
-============
+"""Standard 机器人头部控制。
 
-提供 Standard 机器人头部的控制接口。头部有 2 个自由度：俯仰和偏航。
-
-支持阻塞/非阻塞模式，允许头部与其他部件并行运动。
+头部提供两个自由度：俯仰 ``pitch`` 和偏航 ``yaw``。角度单位为弧度，
+``set_pose`` 的缺省 ``clamp=True`` 会把目标限制到 Standard 实机限位内。
+头部命令没有手臂那样的独立 command id，阻塞等待依赖机器人状态话题；
+因此生产程序应保留合理的等待超时和断开清理逻辑。
 
 Example:
     .. code-block:: python
@@ -29,7 +28,9 @@ from .constants import HEAD_LIMITS
 from ._validation import finite_float
 
 
-# 动作定义: (方法名, 参数名, 符号, 默认值, 说明)
+# 动作定义：(方法名, 参数名, 符号, 默认值, 说明)。
+# look_left/right 和 look_up/down 都把对应轴设置为绝对目标值，
+# 不是相对增量或速度命令；传入负角度时仍按动作名称决定方向。
 _LOOK_ACTIONS = [
     ("look_left",  "yaw",   1,  0.5, "向左看"),
     ("look_right", "yaw",  -1,  0.5, "向右看"),
@@ -64,15 +65,15 @@ def _make_look_action(attr: str, sign: int, default: float, doc: str):
 
 
 class Head:
-    """头部控制类。
+    """头部控制器。
     
     头部有 2 个自由度：
     
     ========  ==============  ==================
     轴        中文名          范围 (rad)
     ========  ==============  ==================
-    pitch     俯仰            -0.7 ~ 0.2
-    yaw       偏航            -1.57 ~ 1.57
+    pitch     俯仰            -0.785 ~ 0.524
+    yaw       偏航            -1.570 ~ 1.570
     ========  ==============  ==================
     
     支持阻塞/非阻塞模式：
@@ -125,7 +126,11 @@ class Head:
         """设置头部运动速度。
         
         Args:
-            speed: 速度 (rad/s)，范围 0.1-3.0
+            speed: 速度 (rad/s)，有效范围 0.1 ~ 3.0；超出范围时自动截断。
+
+        Note:
+            当前 Standard v3 桥接协议只把头部目标角度发送给机器人端，
+            速度设置用于保留统一 API 语义，具体轨迹由机器人端执行。
         """
         self._speed = max(0.1, min(3.0, abs(finite_float(speed, "speed"))))
     
@@ -158,10 +163,16 @@ class Head:
         """设置头部姿态。
         
         Args:
-            pitch: 俯仰角（弧度），范围 -0.7 ~ 0.2
-            yaw: 偏航角（弧度），范围 -1.57 ~ 1.57
-            clamp: 是否自动限制在限位范围内，默认 True
-            block: 是否阻塞等待完成，默认 True
+            pitch: 俯仰角（弧度），闭区间 -0.785 ~ 0.524；``None`` 表示保持当前值。
+            yaw: 偏航角（弧度），闭区间 -1.570 ~ 1.570；``None`` 表示保持当前值。
+            clamp: 是否自动限制在限位范围内，默认 True。设为 False 时，
+                只校验有限数值，不在客户端截断，最终是否接受由机器人端决定。
+            block: 是否阻塞等待完成，默认 True。
+
+        Example:
+            ``robot.head.set_pose(pitch=-0.1, yaw=0.25)`` 发送完整头部目标；
+            ``robot.head.set_yaw(0.25, block=False)`` 立即返回，随后可调用
+            ``robot.head.wait()`` 等待完成。
         """
         
         if pitch is not None:

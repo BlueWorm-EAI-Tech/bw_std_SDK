@@ -1,9 +1,7 @@
-"""
-夹爪控制模块
-============
+"""Standard 夹爪控制。
 
-提供 Standard 机器人夹爪的控制接口。夹爪位置使用 0.0-1.0 归一化表示。
-
+夹爪位置使用 0.0 ~ 1.0 的归一化值表示：0.0 为完全闭合，1.0 为完全
+张开。夹爪命令只描述目标位置和速度，实际执行与完成状态由机器人端反馈。
 支持阻塞/非阻塞模式，允许夹爪与其他部件并行运动。
 
 Example:
@@ -54,7 +52,7 @@ def _make_preset(pos: float, doc: str):
 
 
 class Gripper:
-    """夹爪控制类。
+    """夹爪控制器。
     
     夹爪位置使用归一化值表示：
     
@@ -68,7 +66,7 @@ class Gripper:
     
     Attributes:
         side: 夹爪侧别 ('left' 或 'right')
-        position: 当前位置 (0.0-1.0)
+        position: 当前目标位置（0.0 ~ 1.0）
         is_moving: 是否正在运动中
     
     Example:
@@ -82,7 +80,7 @@ class Gripper:
             robot.right_gripper.open(block=False)
     """
     
-    #: 默认夹爪速度 (单位/s，0-1 范围)
+    #: 默认夹爪速度（位置范围 0.0 ~ 1.0；速度单位由机器人端定义）
     DEFAULT_SPEED = 2.0
     
     def __init__(self, robot: "Mantis", side: str):
@@ -106,14 +104,18 @@ class Gripper:
     
     @property
     def position(self) -> float:
-        """当前夹爪位置 (0.0-1.0)。"""
+        """当前夹爪位置（0.0 ~ 1.0）。"""
         return self._position
     
     def set_speed(self, speed: float):
         """设置夹爪速度。
         
         Args:
-            speed: 速度 (单位/s)，范围 0.5-5.0
+            speed: 速度 (单位/s)，范围 0.5 ~ 5.0
+
+        Note:
+            Standard 当前夹爪话题只接收目标位置；速度值保存在客户端，
+            供统一 API 和后续协议扩展使用，不会改变已经发布的 JSON 字段。
         """
         self._speed = max(0.5, min(5.0, abs(finite_float(speed, "speed"))))
     
@@ -135,8 +137,8 @@ class Gripper:
         """设置夹爪位置。
         
         Args:
-            position: 目标位置 (0.0-1.0)
-            block: 是否阻塞等待完成，默认 True
+            position: 目标位置（0.0 ~ 1.0）。超出范围时自动截断。
+            block: 是否阻塞等待完成，默认 True。
         """
         position = finite_float(position, "position")
         self._position = max(0.0, min(1.0, position))

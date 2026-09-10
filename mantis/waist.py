@@ -1,4 +1,9 @@
-"""Standard C 轴滑台控制。"""
+"""Standard C 轴滑台控制。
+
+Standard 的“腰部”只有升降滑台，不包含前后弯腰轴。SDK 以出厂默认高度
+``-100 mm`` 为零点，公共 ``height`` 使用相对位移（m）：硬件位置
+``-500 ~ 0 mm`` 对应 SDK 的 ``-0.4 ~ 0.1 m``。
+"""
 
 from typing import TYPE_CHECKING
 
@@ -8,13 +13,18 @@ if TYPE_CHECKING:
     from .mantis import Mantis
 
 
-# Standard 默认位置 -100mm，硬件范围 -500mm ~ 0mm。
-# SDK 暴露相对默认位置的米制位移，因此范围为 -0.4m ~ 0.1m。
+# Standard 默认位置 -100 mm，硬件范围 -500 ~ 0 mm。
+# SDK 暴露相对默认位置的米制位移，因此范围为 -0.4 ~ 0.1 m。
 WAIST_LIMITS = (-0.4, 0.1)
 
 
 class Waist:
-    """控制 Standard 滑台高度；Standard 不包含前后弯腰自由度。"""
+    """控制 Standard 滑台高度；Standard 不包含前后弯腰自由度。
+
+    ``set_height`` 的值是相对默认位置的目标位移，不是直接的绝对硬件
+    编码器位置。缺省 ``clamp=True``，超出 ``-0.4 ~ 0.1 m`` 时会截断到
+    限位；``clamp=False`` 只校验有限数值，最终由机器人端决定是否接受。
+    """
 
     DEFAULT_SPEED = 0.1
 
@@ -41,7 +51,7 @@ class Waist:
         return 0.0
 
     def set_speed(self, speed: float):
-        """设置滑台最大速度，单位为 m/s，范围 0.01-0.5。"""
+        """设置滑台最大速度，单位为 m/s，范围 0.01 ~ 0.5。"""
         self._speed = max(0.01, min(0.5, abs(finite_float(speed, "speed"))))
 
     @staticmethod
@@ -81,7 +91,13 @@ class Waist:
         return self._robot.is_moving(["waist"])
 
     def set_height(self, height: float, clamp: bool = True, block: bool = True):
-        """设置相对默认位置的目标高度，单位为米。"""
+        """设置相对默认位置的目标高度。
+
+        Args:
+            height: 相对默认位置的位移，单位 m，闭区间 -0.4 ~ 0.1。
+            clamp: 是否把目标截断到限位，默认 True。
+            block: 是否等待状态报告运动完成，默认 True。
+        """
         self._height = self._clamp(height) if clamp else finite_float(height, "height")
         self._robot._publish_waist()
         self._execute_motion(block)

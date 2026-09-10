@@ -6,12 +6,26 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+### [Unreleased]
+
+**文档与示例**
+
+- 补充“当前版本只支持”能力矩阵，明确头部、全向底盘、夹爪和 C 轴滑台的单位、方向、限位与不支持项。
+- 统一公开文档中的区间写法为 `下限 ~ 上限`，补充连接、状态、阻塞等待、停止边界和异常处理说明。
+- 新增只读上电检查、状态监控、双臂同步、头部扫描、底盘方形路径、底盘安全停止和交接工作流示例。
+- 增加与 Unitree SDK2、xArm Python SDK、Universal Robots RTDE 的能力对照和后续完善优先级。
+
+**工程**
+
+- 修正包元数据中的项目主页和仓库地址，统一指向 `bw_std_SDK`。
+- 扩展示例布局回归测试，防止新示例缺失或区间文档退回旧写法。
+
 ### [1.4.0] - 2026-08-28
 
 **Standard 专用适配**
 
 - SDK 默认且只接受 `robot_version="standard"`，保留 `std` 缩写。
-- 手臂正式关节名切换为 `A_left/right_Degree1..7_joint`，角度直接使用 Standard URDF 语义。
+- 手臂正式关节名切换为 `A_left/right_DegreeN_joint`（N 为 1 ~ 7），角度直接使用 Standard URDF 语义。
 - 公共手臂索引固定为肩俯仰、肩翻滚、肩偏航、肘俯仰、腕翻滚、腕俯仰、腕偏航。
 - 更新左右臂、头部和 C 轴滑台的 Standard 实机限位。
 - `set_joint()` 只发送单关节，`set_joints()` 只发送当前手臂，避免部分动作隐式覆盖另一侧目标。

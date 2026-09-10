@@ -27,27 +27,37 @@ ROOT_EXAMPLE_FILES = {
 EXPECTED_EXAMPLES = {
     "examples/common.py",
     "examples/basic/connection_example.py",
+    "examples/basic/preflight_check_example.py",
+    "examples/basic/safe_stop_example.py",
     "examples/basic/status_subscription_example.py",
+    "examples/basic/status_monitor_example.py",
     "examples/discovery/discovery_example.py",
     "examples/discovery/sn_topic_diagnostic.py",
     "examples/arm/joint_control_example.py",
+    "examples/arm/dual_arm_joint_example.py",
     "examples/arm/ik_pose_example.py",
     "examples/gripper/gripper_example.py",
     "examples/head/head_example.py",
+    "examples/head/head_scan_example.py",
     "examples/waist/waist_height_example.py",
     "examples/chassis/chassis_example.py",
+    "examples/chassis/chassis_square_example.py",
     "examples/workflows/parallel_motion_example.py",
     "examples/workflows/coffee_workflow_example.py",
+    "examples/workflows/handoff_workflow_example.py",
 }
 
 CAPABILITY_KEYWORDS = {
     "通用参数",
     "功能覆盖表",
     "连接",
+    "上电前检查",
     "发现",
     "状态",
+    "状态监控",
     "subscribe_status",
     "手臂",
+    "双臂",
     "ik",
     "block=true",
     "block=false",
@@ -56,6 +66,9 @@ CAPABILITY_KEYWORDS = {
     "头部",
     "腰部",
     "底盘",
+    "方形路径",
+    "安全停止",
+    "交接",
     "并行",
     "workflow",
 }
@@ -108,6 +121,18 @@ def test_examples_keep_python_3_8_argparse_compatibility():
     ]
 
     assert all("BooleanOptionalAction" not in text for text in example_sources)
+
+
+def test_public_docs_use_tilde_for_numeric_ranges():
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    examples_readme = (EXAMPLES_DIR / "README.md").read_text(encoding="utf-8")
+
+    # `..` is still valid in Sphinx docstring directives, but public Markdown
+    # documentation must use the readable `lower ~ upper` range notation.
+    for text in (readme, examples_readme):
+        assert "-500..0" not in text
+        assert "-0.4..0.1" not in text
+        assert "0.1-3.0" not in text
 
 
 def test_connection_example_allows_documented_auto_discovery():

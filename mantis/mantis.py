@@ -1,8 +1,8 @@
-"""
-Mantis 机器人主控制类
-======================
+"""Standard 机器人主控制类。
 
-提供 Standard 机器人的统一控制接口。
+提供 Standard 机器人的统一控制接口：双臂、双夹爪、头部、C 轴滑台和
+全向底盘。客户端只负责发送 JSON 目标和消费状态，IK 与运动平滑在机器人
+端执行；因此 SDK 不需要 ROS2、URDF、Pinocchio 或 CasADi。
 
 通信协议:
     使用 Zenoh 协议进行通信，无需安装 ROS2。
@@ -1022,9 +1022,12 @@ class Mantis:
         return set(joint_names).issubset(set(JOINT_NAMES))
     
     def stop(self):
-        """停止所有运动。
-        
-        立即停止底盘运动。
+        """停止底盘运动。
+
+        当前 Standard SDK 能通过公共协议立即发送零速度的只有底盘。该方法
+        不会撤销已发送的手臂、头部或夹爪目标，也不等价于硬件急停；发生
+        人身或设备风险时必须使用机器人硬件急停。上下文管理器退出时会自动
+        调用此方法，再释放 Zenoh 资源。
         """
         if self._connected:
             self._chassis.stop()

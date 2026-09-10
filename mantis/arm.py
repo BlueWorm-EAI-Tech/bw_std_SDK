@@ -32,7 +32,8 @@ if TYPE_CHECKING:
     from .mantis import Mantis
 
 
-# 关节定义: (索引, 方法名后缀, 中文说明)
+# 关节定义：(索引, 方法名后缀, 中文说明)。索引固定为 0 ~ 6，不能按
+# 左右手臂重新排序；左右臂只有 shoulder_roll 的实际限位方向不同。
 JOINT_DEFS = [
     (0, "shoulder_pitch", "肩俯仰"),
     (1, "shoulder_roll",  "肩翻滚"),
@@ -48,7 +49,7 @@ def _make_joint_setter(index: int, doc: str):
     """工厂函数：生成单关节设置方法。
     
     Args:
-        index: 关节索引 (0-6)
+        index: 关节索引（0 ~ 6）
         doc: 关节中文说明
         
     Returns:
@@ -160,14 +161,20 @@ class Arm:
         """设置关节运动速度。
         
         Args:
-            speed: 关节速度 (rad/s)，范围 0.1-3.0
+            speed: 关节速度 (rad/s)，范围 0.1 ~ 3.0
+
+        Note:
+            该属性用于兼容统一控制器接口并记录客户端默认值。要覆盖
+            Standard 机器人端本次轨迹的速度，请在 ``set_joint``、
+            ``set_joints``、``home`` 或 ``ik`` 中显式传入
+            ``max_velocity`` 等运动约束参数。
         """
         self._joint_speed = max(0.1, min(3.0, abs(finite_float(speed, "speed"))))
     
     def get_limit(self, index: int) -> Tuple[float, float]:
         """获取指定关节的限位。"""
         if not 0 <= index < NUM_ARM_JOINTS:
-            raise ValueError(f"index 必须在 0-{NUM_ARM_JOINTS-1} 之间")
+            raise ValueError(f"index 必须在 0 ~ {NUM_ARM_JOINTS-1} 之间")
         return self._limits[index]
     
     def _clamp(self, index: int, value: float) -> float:
@@ -189,9 +196,13 @@ class Arm:
         """设置所有关节角度。
         
         Args:
-            positions: 7 个关节角度（弧度）
-            clamp: 是否自动限制在限位范围内，默认 True
-            block: 是否阻塞等待完成，默认 True
+            positions: 7 个关节角度（弧度），顺序固定为 Degree1 ~ Degree7。
+            clamp: 是否自动限制在该手臂限位范围内，默认 True。
+            block: 是否阻塞等待完成，默认 True；False 时可用 ``arm.wait()``
+                或 ``robot.wait()`` 等待对应 command id。
+            max_velocity: 可选最大速度（rad/s），必须是正的有限数值。
+            max_acceleration: 可选最大加速度（rad/s^2），必须是正的有限数值。
+            max_jerk: 可选最大加加速度（rad/s^3），必须是正的有限数值。
             
         Example:
             .. code-block:: python
@@ -245,13 +256,16 @@ class Arm:
         """设置单个关节角度。
         
         Args:
-            index: 关节索引 (0-6)
-            position: 目标角度（弧度）
-            clamp: 是否自动限制在限位范围内，默认 True
-            block: 是否阻塞等待完成，默认 True
+            index: 关节索引（0 ~ 6）。
+            position: 目标角度（弧度）。
+            clamp: 是否自动限制在限位范围内，默认 True。
+            block: 是否阻塞等待完成，默认 True。
+            max_velocity: 可选最大速度（rad/s），必须是正的有限数值。
+            max_acceleration: 可选最大加速度（rad/s^2），必须是正的有限数值。
+            max_jerk: 可选最大加加速度（rad/s^3），必须是正的有限数值。
         """
         if not 0 <= index < NUM_ARM_JOINTS:
-            raise ValueError(f"index 必须在 0-{NUM_ARM_JOINTS-1} 之间")
+            raise ValueError(f"index 必须在 0 ~ {NUM_ARM_JOINTS-1} 之间")
         
         if clamp:
             position = self._clamp(index, position)
@@ -345,7 +359,12 @@ class Arm:
             x, y, z: Target position (meters) or Delta position (if abs=False)
             roll, pitch, yaw: Target orientation (radians) or Delta orientation (if abs=False)
             block: Whether to wait for motion to complete
-            abs: Whether to use absolute coordinates (default), False for relative/incremental
+            abs: Whether to use absolute coordinates (default), False for relative/incremental.
+                Absolute coordinates use the Standard ``C_Link`` frame; relative values
+                are accumulated on the robot-side command target.
+            max_velocity: Optional maximum joint velocity in rad/s.
+            max_acceleration: Optional maximum joint acceleration in rad/s^2.
+            max_jerk: Optional maximum joint jerk in rad/s^3.
             
         Raises:
             RuntimeError: If the robot is not connected

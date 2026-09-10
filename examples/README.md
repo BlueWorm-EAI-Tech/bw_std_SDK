@@ -1,6 +1,15 @@
 # Standard SDK 示例
 
-在仓库根目录使用 `python -m examples.<分类>.<脚本>` 运行。会让机器人运动的示例必须显式传 `--ip` 或 `--sn`，所有脚本固定使用 `robot_version=standard`。
+在仓库根目录执行 `python -m examples.<分类>.<脚本>`。除只读的发现、连接
+和状态示例外，所有脚本都会让真实机器人运动，必须显式传入 `--ip` 或
+`--sn`，不会使用硬编码目标。
+
+## 运行前检查
+
+1. 机器人端已启动 `./scripts/local/sdk_bridge.sh standard v3 wifi`（有线网络使用 `wired`）。
+2. 客户端和机器人在同一 Zenoh 网络，且默认端口 `7447` 可达。
+3. 急停可用、运动区域无人且无障碍物；第一次运行使用较小的位移和较低速度。
+4. 先运行 `basic/preflight_check_example.py` 确认 SN、IP 和状态字段，再运行运动示例。
 
 ## 通用参数
 
@@ -9,57 +18,88 @@ python -m examples.basic.connection_example --ip 192.168.50.170
 python -m examples.basic.connection_example --sn BW_XXXXXXX
 ```
 
-- `--ip`: Standard 机器人 IP
-- `--sn`: 机器人序列号
-- `--port`: Zenoh 端口，默认 `7447`
-- `--robot-version`: 仅接受 `standard`，通常无需传
-- `--verify / --no-verify`: 是否等待机器人状态完成连接校验
+| 参数 | 说明 |
+| --- | --- |
+| `--ip` | Standard 机器人 IP；与 `--sn` 至少传一个（连接示例可自动发现） |
+| `--sn` | 机器人序列号；多机器人环境优先使用 |
+| `--port` | Zenoh router 端口，默认 `7447` |
+| `--robot-version` | 只接受 `standard`，通常不需要传 |
+| `--verify` / `--no-verify` | 是否等待 `system_status` 完成连接校验，默认开启 |
+| `--non-blocking` | 支持该参数的示例使用 `block=False`，结尾显式等待 |
 
 ## 功能覆盖表
 
-| 功能 | 示例 |
+下面的索引按 SDK 公共能力列出示例；脚本内的 `subscribe_status`、
+`block=True`、`block=False` 和 `robot.wait()` 用法都对应真实 API。
+
+### 连接、发现和诊断
+
+| 示例 | 作用 | 是否运动 |
+| --- | --- | --- |
+| `basic/connection_example.py` | 按 IP/SN 或自动发现连接，打印 `robot_ip`、`robot_sn`、`system_status` | 否 |
+| `basic/preflight_check_example.py` | 只读上电前检查：身份、状态字段、运动标志和支持能力 | 否 |
+| `basic/status_subscription_example.py` | 订阅状态并测量消息频率 | 否 |
+| `basic/status_monitor_example.py` | 状态监控：持续打印状态变化和当前运动部件 | 否 |
+| `discovery/discovery_example.py` | `RobotDiscovery` 增量发现和在线超时剔除 | 否 |
+| `discovery/sn_topic_diagnostic.py` | 直接读取并解析 `sn` 话题，定位网络或身份问题 | 否 |
+
+### 手臂、IK 和夹爪
+
+| 示例 | 作用 |
 | --- | --- |
-| IP/SN 连接、`robot_ip`、`robot_sn`、`system_status` | `basic/connection_example.py` |
-| `subscribe_status()` 状态订阅与频率测量 | `basic/status_subscription_example.py` |
-| 小幅手臂和头部预览动作 | `basic/rviz_preview_example.py` |
-| `RobotDiscovery` 和发现辅助函数 | `discovery/discovery_example.py` |
-| 原始 Zenoh `sn` 话题诊断 | `discovery/sn_topic_diagnostic.py` |
-| 手臂关节、限位、`home`、`set_joint`、`set_joints`、`block=True/False` | `arm/joint_control_example.py` |
-| Standard 命名关节姿态 | `arm/manual_joint_pose_example.py` |
-| 机器人端 IK 绝对/相对位姿、左/右/双臂、运动约束 | `arm/ik_pose_example.py` |
-| 夹爪 open、close、half_open、set_position | `gripper/gripper_example.py` |
-| 头部 look、set_pose、set_pitch、set_yaw、center | `head/head_example.py` |
-| Standard C 轴滑台高度、up、down、move、home | `waist/waist_height_example.py` |
-| 底盘 forward、backward、strafe、turn、move、stop | `chassis/chassis_example.py` |
-| 并行运动与 `robot.wait()` | `workflows/parallel_motion_example.py` |
-| 手臂、夹爪、头部组合 workflow | `workflows/coffee_workflow_example.py` |
+| `arm/joint_control_example.py` | 单臂单关节、7 轴目标、限位、速度和阻塞模式 |
+| `arm/dual_arm_joint_example.py` | 双臂同时发送 7 轴目标，演示 command id 等待 |
+| `arm/manual_joint_pose_example.py` | 使用 `shoulder_pitch` 等可读方法组合小姿态 |
+| `arm/ik_pose_example.py` | Standard `C_Link` 下的绝对/相对 IK、双臂和运动约束 |
+| `gripper/gripper_example.py` | `open`、`close`、`half_open` 和 `set_position` |
 
-Standard 腰部不支持前后弯腰，因此没有弯腰示例。
+### 头部、滑台和底盘
 
-## IK 验收
+| 示例 | 作用 |
+| --- | --- |
+| `head/head_example.py` | `look_*`、`set_pose`、回中和限位读取 |
+| `head/head_scan_example.py` | 在安全范围内按多个 yaw 目标扫描，演示观察状态 |
+| `waist/waist_height_example.py` | C 轴滑台回零、升降、相对位移和限位 |
+| `chassis/chassis_example.py` | 全向平移、旋转、摩擦补偿和非阻塞停止 |
+| `chassis/chassis_square_example.py` | 底盘方形路径：四段短距离路径，演示每段完成后再执行下一段 |
+| `basic/safe_stop_example.py` | `try/finally` 和 Ctrl-C 时发送底盘零速度 |
 
-先用相对小增量验证：
+### 组合工作流
 
-```bash
-python -m examples.arm.ik_pose_example \
-  --ip 192.168.50.170 \
-  --side left \
-  --mode rel
-```
+| 示例 | 作用 |
+| --- | --- |
+| `workflows/parallel_motion_example.py` | 手臂、头部、夹爪、滑台非阻塞并行，最后 `robot.wait()` |
+| `workflows/coffee_workflow_example.py` | 手臂、夹爪、头部和回零的完整多步骤示例 |
+| `workflows/handoff_workflow_example.py` | 两侧夹爪交接的可读工作流，展示阶段化函数和异常清理 |
 
-验证双臂并行：
+## 常用命令
 
 ```bash
+# 先做只读检查
+python -m examples.basic.preflight_check_example --ip 192.168.50.170
+
+# 双臂小幅度运动
+python -m examples.arm.dual_arm_joint_example --ip 192.168.50.170
+
+# 只做相对 IK 小增量
 python -m examples.arm.ik_pose_example \
-  --ip 192.168.50.170 \
-  --side both \
-  --mode both \
-  --non-blocking \
-  --max-velocity 1.0 \
-  --max-acceleration 3.0 \
-  --max-jerk 20.0
+  --ip 192.168.50.170 --side left --mode rel
+
+# 双臂非阻塞 IK，并覆盖机器人端运动约束
+python -m examples.arm.ik_pose_example \
+  --ip 192.168.50.170 --side both --mode both --non-blocking \
+  --max-velocity 1.0 --max-acceleration 3.0 --max-jerk 20.0
+
+# 查看状态和底盘安全停止
+python -m examples.basic.status_monitor_example --ip 192.168.50.170 --duration 10
+python -m examples.basic.safe_stop_example --ip 192.168.50.170
 ```
 
-绝对位姿使用 `C_Link` 坐标。示例内置的是 Standard 零关节角下左右 Degree7 原点位姿，不是旧 Mantis 机型坐标。
+## 示例编写规范
 
-`--non-blocking` 会以 `block=False` 发送命令，再调用 `robot.wait()` 等待对应 `command_id` 完成。IK 在机器人 ROS 侧求解，客户端不需要 Pinocchio、CasADi 或 URDF。
+- 使用 `from examples.common import ...` 复用连接、参数和目标校验。
+- 所有真实运动都使用 `with connected_robot(args)`，保证异常时断开连接。
+- 目标参数放在命令行，不在代码中写入真实 IP、SN 或永久循环。
+- 非阻塞命令必须在结尾调用模块 `wait()` 或 `robot.wait()`；底盘示例还应在 `finally` 中调用 `stop()`。
+- 示例中的距离、角度和速度与 README 一样使用明确单位；范围统一写成 `下限 ~ 上限`。
+- Standard 没有腰部前后弯腰轴，不添加弯腰示例；调用相应 API 会得到 `NotImplementedError`。

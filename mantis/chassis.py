@@ -1,13 +1,15 @@
-"""
-底盘控制模块
-============
+"""Standard 全向底盘控制。
 
-提供 Standard 机器人底盘的控制接口。底盘支持全向移动（前后、左右、旋转）。
+底盘支持前后、左右平移以及原地旋转。公共 API 使用“运动量 + 速度”的
+有限时长模型：每条命令都会根据目标距离或角度计算持续时间，完成后发送
+零速度；因此 SDK 不提供持续速度流接口，避免业务代码异常时底盘一直运动。
 
 安全设计：
-    - 所有运动命令必须指定距离或角度，运动完成后自动停止
-    - 不提供持续速度控制，避免代码异常导致机器人失控
-    - 支持自定义速度，但必须同时指定运动量
+    - 所有运动命令必须指定距离或角度，完成后自动发送停止命令。
+    - ``block=False`` 只是不等待，底盘仍由 SDK 的定时器在预计时长后停止。
+    - 新的非阻塞底盘命令会取消旧的停止定时器，避免旧命令提前刹停新命令。
+    - ``stop()`` 是立即发送零速度的底盘停止，不等价于机器人急停，也不会取消
+      已经发出的手臂、头部或夹爪目标。
 
 Example:
     .. code-block:: python
@@ -40,14 +42,20 @@ if TYPE_CHECKING:
 
 
 class Chassis:
-    """底盘控制类（基于距离/角度的安全控制）。
+    """基于距离/角度的全向底盘控制器。
     
     所有运动命令都需要指定目标距离或角度，运动完成后自动停止。
     这种设计确保即使程序异常退出，机器人也会在完成当前运动后停止。
     
-    默认速度：
-        - 线速度: 0.1 m/s
-        - 角速度: 0.5 rad/s (约 28.6 °/s)
+    坐标和单位：
+        - ``x`` 正方向为前进，``y`` 正方向为左移，单位为 m。
+        - ``angle`` 正方向为左转，单位为 degree；底层角速度单位为 rad/s。
+        - ``forward``、``backward``、``strafe_*`` 的距离参数必须是正数，
+          方向由方法名称决定；``move`` 才使用有符号的 x/y/angle。
+
+    速度限制：
+        - 缺省线速度 0.1 m/s，允许范围 0.01 ~ 0.5 m/s。
+        - 缺省角速度 0.3 rad/s，允许范围 0.1 ~ 1.0 rad/s。
     
     Example:
         .. code-block:: python
@@ -106,8 +114,10 @@ class Chassis:
         系数越大，运动时间越长，用于补偿地面摩擦力导致的距离/角度损失。
         
         Args:
-            linear: 线性运动摩擦补偿系数，默认 1.0，建议范围 1.0-3.0
-            angular: 旋转运动摩擦补偿系数，默认 1.0，建议范围 1.0-3.0
+            linear: 线性运动摩擦补偿系数，默认 1.0，建议范围 1.0 ~ 3.0，
+                实际接受范围 0.5 ~ 5.0。
+            angular: 旋转运动摩擦补偿系数，默认 1.0，建议范围 1.0 ~ 3.0，
+                实际接受范围 0.5 ~ 5.0。
             
         Example:
             .. code-block:: python
@@ -124,8 +134,8 @@ class Chassis:
         """设置默认速度。
         
         Args:
-            linear: 默认线速度 (m/s)，范围 0.01-0.5
-            angular: 默认角速度 (rad/s)，范围 0.1-1.0
+            linear: 默认线速度 (m/s)，范围 0.01 ~ 0.5。
+            angular: 默认角速度 (rad/s)，范围 0.1 ~ 1.0。
             
         Example:
             .. code-block:: python
@@ -147,9 +157,10 @@ class Chassis:
         """前进指定距离。
         
         Args:
-            distance: 前进距离 (米)，必须为正数
-            speed: 速度 (m/s)，默认使用 default_linear_speed
-            block: 是否阻塞等待完成，默认 True
+            distance: 前进距离 (m)，必须为有限正数；负号会被 ``abs`` 忽略。
+            speed: 速度 (m/s)，默认使用 ``default_linear_speed``，会限制在
+                0.01 ~ 0.5 m/s。
+            block: 是否阻塞等待完成，默认 True。False 时立即返回，并由定时器停止。
             
         Example:
             .. code-block:: python
@@ -221,12 +232,13 @@ class Chassis:
         """组合运动：先平移再旋转。
         
         Args:
-            x: 前后移动距离 (米)，正值前进，负值后退
-            y: 左右移动距离 (米)，正值左移，负值右移
-            angle: 旋转角度 (度)，正值左转，负值右转
-            linear_speed: 线速度 (m/s)
-            angular_speed: 角速度 (rad/s)
-            block: 是否阻塞等待完成，默认 True
+            x: 前后移动距离 (m)，正值前进，负值后退。
+            y: 左右移动距离 (m)，正值左移，负值右移。
+            angle: 旋转角度 (degree)，正值左转，负值右转。
+            linear_speed: 线速度 (m/s)，限制在 0.01 ~ 0.5。
+            angular_speed: 角速度 (rad/s)，限制在 0.1 ~ 1.0。
+            block: 是否阻塞等待完成，默认 True。平移和旋转按顺序执行，
+                不是同时进行的速度合成。
             
         Example:
             .. code-block:: python
@@ -243,7 +255,12 @@ class Chassis:
             self._rotate(angle, angular_speed, block)
     
     def stop(self):
-        """立即停止所有运动。"""
+        """立即停止底盘。
+
+        发送 ``vx=0``、``vy=0``、``omega=0``，并取消尚未触发的自动停止定时器。
+        该方法只影响底盘；需要停止手臂、头部或夹爪时，应使用机器人端急停或
+        分别发送安全目标。
+        """
         with self._stop_timer_lock:
             if self._stop_timer is not None:
                 self._stop_timer.cancel()
@@ -315,8 +332,8 @@ class Chassis:
         """执行运动。
         
         Args:
-            duration: 运动时长 (秒) - 用于计算停止时间，但停止判断基于整机状态
-            block: 是否阻塞等待完成
+            duration: 运动时长 (秒)，由距离/速度和摩擦补偿系数计算。
+            block: 是否阻塞。阻塞模式会在时长结束后发送停止，再等待状态稳定。
         """
         self._robot._publish_chassis()
         
