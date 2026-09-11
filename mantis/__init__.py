@@ -12,6 +12,11 @@ Features:
     - 平滑运动：复用机器人端 Standard smoother
     - 关节限位：自动限制在安全范围内
 
+Coordinate convention:
+    机器人基座采用右手系：+X 向前、+Y 向左、+Z 向上。所有旋转关节
+    按各自局部坐标系遵循右手定则；双臂局部轴序为 +Y、+X、+Z、+Y、+X、+Y、+Z，
+    头部 ``pitch``、``yaw``、``roll`` 的局部轴序为 +Z、+X、+Y。
+
 Installation:
     .. code-block:: bash
     
