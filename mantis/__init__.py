@@ -21,7 +21,7 @@ Installation:
     .. code-block:: bash
     
         pip install eclipse-zenoh
-        pip install bw-mantis-sdk
+        pip install bw_std_mantis_sdk
 
 Quick Start:
     .. code-block:: python
