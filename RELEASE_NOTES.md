@@ -140,7 +140,7 @@
   - `ik(abs=False)` 现在基于内部维护的目标点进行累加，确保连续增量运动的连贯性。
 - 修复 pip 下载缺少模型文件的问题。
 
-**问题反馈**: [GitHub Issues](https://github.com/BlueWorm-EAI-Tech/mantis-sdk/issues)
+**问题反馈**: [GitHub Issues](https://github.com/BlueWorm-EAI-Tech/bw_std_SDK/issues)
 
 **许可证**: MIT License
 
