@@ -18,10 +18,10 @@ Coordinate convention:
     头部 ``pitch``、``yaw``、``roll`` 的局部轴序为 +Z、+X、+Y。
 
 Installation:
+    在仓库根目录本地安装（PyPI 包尚未发布）:
     .. code-block:: bash
     
-        pip install eclipse-zenoh
-        pip install bw_std_mantis_sdk
+        python3 -m pip install -e .
 
 Quick Start:
     .. code-block:: python
