@@ -65,7 +65,7 @@ arm.home()                                # 该侧回零，有力保持
 robot.set_arms_joints([0] * 7, [0] * 7)     # 一条命令更新双臂
 ```
 
-上述动作及 `ik()` 支持 `max_velocity`、`max_acceleration`、`max_jerk`，单位为 rad/s、rad/s²、rad/s³。
+`set_joint()`、`set_joints()`、`home()`、`ik()` 及双臂接口支持 `max_velocity`、`max_acceleration`、`max_jerk`，单位为 rad/s、rad/s²、rad/s³。
 `arm.set_speed()` 仅保存客户端兼容值；控制实际轨迹速度请显式传 `max_velocity`。
 `limits` / `get_limit(index)` 读取限位。
 
@@ -152,4 +152,4 @@ python3 -m examples.basic.connection_example --ip 192.168.1.100
 python3 -m examples.arm.ik_pose_example --ip 192.168.1.100 --side left --mode rel
 ```
 
-仓库原有单元测试：`python3 -m pytest -q`。许可证见 [LICENSE](LICENSE)。
+GitHub 仓库原有单元测试：`python3 -m pytest -q`。许可证见 [LICENSE](LICENSE)。
