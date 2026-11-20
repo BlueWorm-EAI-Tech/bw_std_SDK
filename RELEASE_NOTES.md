@@ -1,10 +1,17 @@
 # Standard SDK Release Notes
 
-最新版本: V1.4.0 (2026-08-28)
+最新版本: V1.4.4 (2026-11-20)
 
 ## Changelog
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
+
+### [1.4.4] - 2026-11-20
+
+- 对齐配套镜像的 SDK 就绪状态，增加 `wait_until_ready()`。
+- 修复单侧夹爪覆盖另一侧和只读连接退出发送控制消息的问题。
+- 支持双臂统一命令；仅在有效命令发布后更新手臂目标缓存。
+- 夹爪示例结束默认张开，精简安装与接口说明。
 
 ### [Unreleased]
 
