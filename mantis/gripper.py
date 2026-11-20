@@ -143,7 +143,7 @@ class Gripper:
         position = finite_float(position, "position")
         self._position = max(0.0, min(1.0, position))
 
-        self._robot._publish_grippers()
+        self._robot._publish_grippers(self._side)
         self._execute_motion(block)
     
     def __repr__(self) -> str:

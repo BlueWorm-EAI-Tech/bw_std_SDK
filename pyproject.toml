@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bw_std_mantis_sdk"
-version = "1.4.0"
+version = "1.4.4"
 description = "Standard 机器人 Python SDK，基于 Zenoh 通信，无需安装 ROS2"
 readme = "README.md"
 license = {text = "MIT"}

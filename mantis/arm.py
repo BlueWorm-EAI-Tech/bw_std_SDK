@@ -96,7 +96,7 @@ class Arm:
     Attributes:
         side: 手臂侧别 ('left' 或 'right')
         joint_names: 关节名称列表
-        positions: 当前关节位置列表
+        positions: 最近客户端目标位置缓存，不是硬件实测反馈
         limits: 关节限位列表
         is_moving: 是否正在运动中
     
@@ -149,7 +149,7 @@ class Arm:
     
     @property
     def positions(self) -> List[float]:
-        """当前关节位置。"""
+        """最近客户端目标位置缓存；不代表硬件实测位置。"""
         return self._positions.copy()
     
     @property
@@ -226,10 +226,6 @@ class Arm:
                 for index, value in enumerate(positions)
             ]
         
-        # 更新位置
-        self._target_positions = new_positions
-        self._positions = new_positions
-
         motion_profile = self._motion_profile_payload(
             max_velocity=max_velocity,
             max_acceleration=max_acceleration,
@@ -237,9 +233,11 @@ class Arm:
         )
         command_id = self._robot._publish_arm_joint_command(
             self._joint_names,
-            self._positions,
+            new_positions,
             motion_profile=motion_profile,
         )
+        self._target_positions = list(new_positions)
+        self._positions = list(new_positions)
         self._execute_motion(block, command_id)
     
     def set_joint(
@@ -272,10 +270,6 @@ class Arm:
         else:
             position = finite_float(position, f"joint[{index}]")
         
-        # 更新位置
-        self._positions[index] = position
-        self._target_positions[index] = position
-
         motion_profile = self._motion_profile_payload(
             max_velocity=max_velocity,
             max_acceleration=max_acceleration,
@@ -286,6 +280,8 @@ class Arm:
             [position],
             motion_profile=motion_profile,
         )
+        self._positions[index] = position
+        self._target_positions[index] = position
         self._execute_motion(block, command_id)
 
     @staticmethod

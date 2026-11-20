@@ -30,6 +30,7 @@ Quick Start:
         
         # 连接机器人
         with Mantis(ip="192.168.1.100") as robot:
+            robot.wait_until_ready()
             robot.left_arm.set_shoulder_pitch(-0.5)
             robot.right_arm.set_joints([0.0] * 7)
             robot.head.look_left()
@@ -37,6 +38,7 @@ Quick Start:
         
         # 本地调试（同一局域网）
         with Mantis() as robot:
+            robot.wait_until_ready()
             robot.left_arm.set_shoulder_pitch(-0.5)
 
 Modules:
@@ -47,9 +49,9 @@ Modules:
     - :class:`Chassis`: 底盘控制
 
 Note:
-    使用前需在机器人工作区启动 Standard SDK 链路::
-    
-        ./scripts/local/sdk_bridge.sh standard v3 wifi
+    使用前在 NUC 切换 SDK 模式，并确认双臂零位姿态稳定::
+
+        sudo bash /opt/wifi-delivery/select-mode.sh sdk
 """
 
 from .mantis import Mantis
@@ -71,13 +73,13 @@ from .constants import (
 )
 
 #: SDK 版本号
-__version__ = "1.4.0"
+__version__ = "1.4.4"
 
 #: 作者
 __author__ = "BlueWorm-EAI-Tech"
 
 #: 版本发布日期
-__release_date__ = "2026-08-28"
+__release_date__ = "2026-11-20"
 
 __all__ = [
     "Mantis",

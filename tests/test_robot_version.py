@@ -65,6 +65,7 @@ def test_mantis_rejects_unknown_robot_version():
 
 def test_publish_full_state_uses_raw_urdf_arm_angles():
     robot = Mantis()
+    robot._connected = True
     publisher = _FakePublisher()
     robot._publishers["joints"] = publisher
     robot.left_arm._positions = [0.1, 0.2, 0.3, -0.4, 0.5, -0.6, 0.7]

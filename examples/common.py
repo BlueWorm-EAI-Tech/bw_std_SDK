@@ -59,6 +59,8 @@ def connected_robot(args: argparse.Namespace, *, require_target: bool = True) ->
     if not robot.connect(verify=getattr(args, "verify", True)):
         raise ConnectionError("Unable to connect to the requested Standard robot")
     try:
+        if hasattr(args, 'non_blocking'):
+            robot.wait_until_ready()
         yield robot
     finally:
         robot.disconnect()

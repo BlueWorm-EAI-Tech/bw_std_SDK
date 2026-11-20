@@ -26,6 +26,7 @@ Example:
 
 from typing import Optional, Callable, Dict, Any
 import time
+import math
 import json
 import threading
 import uuid
@@ -40,6 +41,7 @@ from .gripper import Gripper
 from .head import Head
 from .waist import Waist
 from .chassis import Chassis
+from ._validation import finite_float
 from .constants import (
     Topics, JOINT_NAMES,
     SERIAL_TO_URDF_MAP,
@@ -137,6 +139,7 @@ class Mantis:
         self._publishers = {}
         self._subscribers = {}
         self._connected = False
+        self._chassis_command_sent = False
         self._robot_ip: Optional[str] = None
         self._robot_sn: Optional[str] = None
         self._status_topic = Topics.SYSTEM_STATUS
@@ -528,20 +531,25 @@ class Mantis:
                 pending["event"].set()
             self._pending_arm_commands.clear()
         self._connected = False
+        self._chassis_command_sent = False
     
     def disconnect(self):
         """断开与机器人的连接。
         
-        停止底盘运动，关闭 Zenoh 会话并释放资源。
+        本客户端发送过底盘命令时停止底盘，然后关闭 Zenoh 会话并释放资源。
+        只读连接退出不会发送控制消息；不会使双臂或夹爪掉电。
         
         Note:
             使用上下文管理器时会自动调用此方法。
         """
         if self._session:
             # 停止运动
-            if self._connected and "chassis" in self._publishers:
-                self._chassis.stop()
-            self._close_transport()
+            try:
+                if (self._connected and "chassis" in self._publishers
+                        and self._chassis_command_sent):
+                    self._chassis.stop()
+            finally:
+                self._close_transport()
             print("✅ 已断开连接")
     
     # ==================== 内部发布方法 ====================
@@ -555,6 +563,38 @@ class Mantis:
         if not self._connected:
             raise RuntimeError("未连接到机器人，请先调用 connect()")
     
+    def wait_until_ready(self, timeout: float = 15.0):
+        """Wait for SDK mode and acknowledgement of the zero-target power frame.
+
+        This reads status only. Selecting SDK on the NUC starts initialization;
+        connect() and this method do not send a power or motion command.
+        READY does not certify physical arrival; confirm the pose before moving.
+        """
+        self._check_connection()
+        timeout = float(timeout)
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be positive and finite")
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self._check_connection()
+            status = self.system_status
+            if status.get("arm_initialization") == "failed":
+                raise RuntimeError("双臂零目标上电未完成，请查看 NUC 日志")
+            if status.get("arm_execution_fault"):
+                raise RuntimeError(status["arm_execution_fault"])
+            if (status.get("sdk_control_ready") is True and
+                    time.monotonic() - self._last_status_update_time < 1.0):
+                return
+            time.sleep(0.02)
+        raise TimeoutError("SDK 未就绪：确认已切 sdk 模式，等待 arm_initialization=ready / sdk_control_ready=true")
+
+    def _check_motion_ready(self):
+        self._check_connection()
+        if "sdk_control_ready" in self._system_status:
+            if (self._system_status["sdk_control_ready"] is not True or
+                    time.monotonic() - self._last_status_update_time >= 1.0):
+                raise RuntimeError("SDK 未就绪或状态过期，请先调用 wait_until_ready()")
+
     def _publish_joints(self):
         """发布手臂关节角度。
         
@@ -569,7 +609,7 @@ class Mantis:
 
         SDK 只发送目标语义，IK 解算由机器人 ROS 侧统一链路完成。
         """
-        self._check_connection()
+        self._check_motion_ready()
         command = dict(command)
         command_id = str(command.get("command_id") or self._next_command_id())
         command["command_id"] = command_id
@@ -601,6 +641,36 @@ class Mantis:
         if motion_profile:
             command["motion_profile"] = dict(motion_profile)
         return self._publish_arm_command(command, wait_joint_names=joint_names)
+
+    def set_arms_joints(self, left: list, right: list, *, clamp: bool = True,
+                       block: bool = True, max_velocity: float = None,
+                       max_acceleration: float = None, max_jerk: float = None) -> str:
+        """Send both arms as one command (Degree1..7 left, then right).
+
+        Values are radians. Validation and motion constraints match set_joints.
+        Returns one command ID. Cached positions represent requested targets,
+        not measured feedback. block=True waits for that command's result.
+        """
+        self._check_connection()
+        targets = []
+        for arm, values in ((self.left_arm, left), (self.right_arm, right)):
+            if len(values) != 7:
+                raise ValueError(f"{arm.side} positions 长度必须为 7")
+            targets.append([arm._clamp(i, value) if clamp else
+                            finite_float(value, f"{arm.side}[{i}]")
+                            for i, value in enumerate(values)])
+        profile = Arm._motion_profile_payload(max_velocity=max_velocity,
+                                              max_acceleration=max_acceleration,
+                                              max_jerk=max_jerk)
+        command_id = self._publish_arm_joint_command(
+            self.left_arm.joint_names + self.right_arm.joint_names,
+            targets[0] + targets[1], motion_profile=profile)
+        for arm, values in zip((self.left_arm, self.right_arm), targets):
+            arm._positions = list(values)
+            arm._target_positions = list(values)
+        if block:
+            self._wait_arm_command(command_id)
+        return command_id
 
     def _register_pending_arm_command(
         self,
@@ -756,21 +826,21 @@ class Mantis:
         return bool(requested & pending_names)
 
     
-    def _publish_grippers(self):
+    def _publish_grippers(self, side: str):
         """发布夹爪位置。
         
-        将左右夹爪的位置发送到机器人。
+        只发布调用方明确设置的一侧，避免新客户端缓存覆盖另一侧。
         直接发送 JSON 数据，不进行平滑插值。
         """
         self._check_connection()
         
         # 夹爪沿用 joint_states 通道，但只发送夹爪自身，避免隐式改变双臂目标。
-        left_grip = float(self._left_gripper._position) * 0.04
-        right_grip = float(self._right_gripper._position) * 0.04
-        self._publish_joint_state(
-            ["L_Hand_L_Joint", "R_Hand_L_Joint"],
-            [left_grip, right_grip],
-        )
+        self._check_motion_ready()
+        if side not in ("left", "right"):
+            raise ValueError("gripper side must be left or right")
+        gripper = self._left_gripper if side == "left" else self._right_gripper
+        name = "L_Hand_L_Joint" if side == "left" else "R_Hand_L_Joint"
+        self._publish_joint_state([name], [float(gripper._position) * 0.04])
 
     def _publish_head(self):
         self._check_connection()
@@ -800,6 +870,7 @@ class Mantis:
 
     def _publish_joint_state(self, names: list, positions: list):
         """在 legacy joint_states 通道发布不含隐式关节目标的部分更新。"""
+        self._check_motion_ready()
         if len(names) != len(positions):
             raise ValueError("names 与 positions 长度必须一致")
         msg = {
@@ -877,7 +948,10 @@ class Mantis:
             'vy': self._chassis._vy,
             'omega': self._chassis._omega
         }
+        if any(value != 0.0 for value in data.values()):
+            self._check_motion_ready()
         self._publishers['chassis'].put(json.dumps(data).encode('utf-8'))
+        self._chassis_command_sent = True
     
     # ==================== 便捷方法 ====================
     
@@ -1034,8 +1108,8 @@ class Mantis:
 
         当前 Standard SDK 能通过公共协议立即发送零速度的只有底盘。该方法
         不会撤销已发送的手臂、头部或夹爪目标，也不等价于硬件急停；发生
-        人身或设备风险时必须使用机器人硬件急停。上下文管理器退出时会自动
-        调用此方法，再释放 Zenoh 资源。
+        人身或设备风险时必须使用机器人硬件急停。上下文管理器退出仅在
+        本客户端发送过底盘命令时停止底盘，再释放 Zenoh 资源。
         """
         if self._connected:
             self._chassis.stop()
@@ -1112,10 +1186,9 @@ class Mantis:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """退出上下文管理器。
         
-        自动停止运动并断开连接。
+        断开连接；仅停止本客户端使用过的底盘，不给只读连接发送控制。
         """
         if self._connected:
-            self.stop()
             self.disconnect()
     
     def __repr__(self) -> str:
