@@ -24,3 +24,5 @@ frames*
 dist
 scripts
 .githooks
+/.idea/
+/venv/
